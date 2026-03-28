@@ -11,6 +11,9 @@ from pathlib import Path
 from typing import Any, Optional
 from urllib.parse import urlparse
 
+import google.auth
+from google.auth.transport.requests import Request as GoogleAuthRequest
+
 try:
     from google.cloud import storage as _storage
 except ImportError:
@@ -121,8 +124,29 @@ def resolve_media_url(url: str) -> str:
     client = _client()
     bucket = client.bucket(bucket_name)
     blob = bucket.blob(blob_name)
-    return blob.generate_signed_url(
-        version="v4",
-        expiration=timedelta(seconds=cfg.signed_url_ttl_seconds),
-        method="GET",
-    )
+
+    try:
+        return blob.generate_signed_url(
+            version="v4",
+            expiration=timedelta(seconds=cfg.signed_url_ttl_seconds),
+            method="GET",
+        )
+    except AttributeError:
+        # Cloud Run default credentials usually do not include a private key.
+        # Use IAM-based signing with service account email + access token.
+        credentials, _ = google.auth.default(scopes=["https://www.googleapis.com/auth/cloud-platform"])
+        if not getattr(credentials, "token", None):
+            credentials.refresh(GoogleAuthRequest())
+
+        service_account_email = getattr(credentials, "service_account_email", None)
+        access_token = getattr(credentials, "token", None)
+        if not service_account_email or not access_token:
+            raise
+
+        return blob.generate_signed_url(
+            version="v4",
+            expiration=timedelta(seconds=cfg.signed_url_ttl_seconds),
+            method="GET",
+            service_account_email=service_account_email,
+            access_token=access_token,
+        )
