@@ -33,8 +33,13 @@ body {
 }
 
 .nav-brand {
+  display: flex;
+  align-items: center;
+  gap: 10px;
   font-weight: 700;
   letter-spacing: 0.3px;
+  text-decoration: none;
+  color: inherit;
 }
 
 .nav-links {
