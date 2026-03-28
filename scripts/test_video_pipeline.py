@@ -133,8 +133,12 @@ def main() -> None:
     log(f"Video prompt: {(trade['video_prompt'] or '')[:100]}...")
     log(f"Citation prompts: {len(trade['citation_image_prompts'] or [])}")
 
-    output_dir = PROJECT_ROOT / "media" / "test_video"
-    output_dir.mkdir(parents=True, exist_ok=True)
+    output_dir = PROJECT_ROOT / "data" / "media"
+    video_dir = output_dir / "video"
+    audio_dir = output_dir / "audio"
+    citation_dir = output_dir / "citations"
+    for d in (video_dir, audio_dir, citation_dir):
+        d.mkdir(parents=True, exist_ok=True)
 
     # ── Step 1: Citation images ─────────────────────────────────────────
     citation_paths: list[str] = []
@@ -142,7 +146,7 @@ def main() -> None:
         section("STEP 1: Citation Image Generation")
         from backend.gemini.media_generation import generate_citation_image
 
-        img_dir = output_dir / "citations"
+        img_dir = citation_dir
         img_dir.mkdir(parents=True, exist_ok=True)
 
         for i, prompt in enumerate(trade["citation_image_prompts"][:3]):
@@ -172,7 +176,7 @@ def main() -> None:
     section("STEP 2: TTS Audio Generation")
     from backend.gemini.media_generation import synthesize_narration_audio
 
-    audio_path = output_dir / f"trade_{tid}_audio.wav"
+    audio_path = audio_dir / f"trade_{tid}_audio.wav"
     narration = trade["narration_script"]
     log(f"Script: {narration}")
     log(f"Output: {audio_path}")
@@ -197,7 +201,7 @@ def main() -> None:
     section("STEP 3: Video Generation")
     from backend.gemini.media_generation import generate_video_from_prompt
 
-    video_path = output_dir / f"trade_{tid}_video.mp4"
+    video_path = video_dir / f"trade_{tid}_video.mp4"
     video_prompt = trade["video_prompt"]
     target_duration = float(audio_duration or 15.0)
 
@@ -238,7 +242,7 @@ def main() -> None:
     section("STEP 4: FFmpeg Assembly (Audio + Video)")
     from backend.gemini.ffmpeg_assembly import assemble_video_with_audio, overlay_citation_images
 
-    muxed_path = output_dir / f"trade_{tid}_muxed.mp4"
+    muxed_path = video_dir / f"trade_{tid}_muxed.mp4"
     log(f"Audio: {audio_result.get('path')}")
     log(f"Video: {video_result.get('path')}")
     log(f"Output: {muxed_path}")
@@ -259,7 +263,7 @@ def main() -> None:
         mux_result = None
 
     # ── Step 5: Citation Image Overlay ──────────────────────────────────
-    final_path = output_dir / f"trade_{tid}_final.mp4"
+    final_path = video_dir / f"trade_{tid}_final.mp4"
     if mux_result and citation_paths:
         section("STEP 5: Citation Image Overlay")
         log(f"Input video: {mux_result.get('output_path')}")

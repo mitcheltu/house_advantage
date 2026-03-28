@@ -22,8 +22,12 @@ load_dotenv(PROJECT_ROOT / ".env")
 from sqlalchemy import text as sa_text
 from backend.db.connection import get_engine
 
-OUTPUT_DIR = PROJECT_ROOT / "media" / "test_video"
-OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+OUTPUT_DIR = PROJECT_ROOT / "data" / "media"
+VIDEO_DIR = OUTPUT_DIR / "video"
+AUDIO_DIR = OUTPUT_DIR / "audio"
+CITATION_DIR = OUTPUT_DIR / "citations"
+for _d in (VIDEO_DIR, AUDIO_DIR, CITATION_DIR):
+    _d.mkdir(parents=True, exist_ok=True)
 
 
 def log(msg: str) -> None:
@@ -85,7 +89,7 @@ def process_trade(trade: dict) -> dict:
         if trade["citation_image_prompts"]:
             from backend.gemini.media_generation import generate_citation_image
 
-            img_dir = OUTPUT_DIR / "citations"
+            img_dir = CITATION_DIR
             img_dir.mkdir(parents=True, exist_ok=True)
 
             for i, prompt in enumerate(trade["citation_image_prompts"][:3]):
@@ -105,7 +109,7 @@ def process_trade(trade: dict) -> dict:
         # ── Step 2: TTS Audio ───────────────────────────────────────
         from backend.gemini.media_generation import synthesize_narration_audio
 
-        audio_path = OUTPUT_DIR / f"trade_{tid}_audio.wav"
+        audio_path = AUDIO_DIR / f"trade_{tid}_audio.wav"
         audio_result = synthesize_narration_audio(trade["narration_script"], str(audio_path))
         audio_duration = audio_result.get("duration_seconds")
         audio_err = audio_result.get("error")
@@ -116,7 +120,7 @@ def process_trade(trade: dict) -> dict:
         # ── Step 3: Video Generation ────────────────────────────────
         from backend.gemini.media_generation import generate_video_from_prompt
 
-        video_path = OUTPUT_DIR / f"trade_{tid}_video.mp4"
+        video_path = VIDEO_DIR / f"trade_{tid}_video.mp4"
         target_duration = float(audio_duration or 15.0)
 
         video_result = generate_video_from_prompt(
@@ -134,7 +138,7 @@ def process_trade(trade: dict) -> dict:
         # ── Step 4: FFmpeg Mux ──────────────────────────────────────
         from backend.gemini.ffmpeg_assembly import assemble_video_with_audio, overlay_citation_images
 
-        muxed_path = OUTPUT_DIR / f"trade_{tid}_muxed.mp4"
+        muxed_path = VIDEO_DIR / f"trade_{tid}_muxed.mp4"
         mux_result = assemble_video_with_audio(
             video_path=str(video_result.get("path", video_path)),
             audio_path=str(audio_result.get("path", audio_path)),
@@ -142,7 +146,7 @@ def process_trade(trade: dict) -> dict:
         )
 
         # ── Step 5: Citation Image Overlay ──────────────────────────
-        final_path = OUTPUT_DIR / f"trade_{tid}_final.mp4"
+        final_path = VIDEO_DIR / f"trade_{tid}_final.mp4"
         if mux_result and citation_paths:
             try:
                 overlay_result = overlay_citation_images(
@@ -187,7 +191,7 @@ def main() -> None:
     skipped = []
     for trade in trades:
         tid = trade["trade_id"]
-        final = OUTPUT_DIR / f"trade_{tid}_final.mp4"
+        final = VIDEO_DIR / f"trade_{tid}_final.mp4"
         if final.exists() and final.stat().st_size > 10000:
             skipped.append(tid)
         else:

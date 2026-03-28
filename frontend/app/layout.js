@@ -1,4 +1,5 @@
 import Link from 'next/link';
+import Image from 'next/image';
 import './globals.css';
 
 export const metadata = {
@@ -12,7 +13,17 @@ export default function RootLayout({ children }) {
       <body>
         <div className="app-shell">
           <nav className="top-nav">
-            <div className="nav-brand">House Advantage</div>
+            <Link href="/" className="nav-brand">
+              <Image
+                src="/House_Advantage_Logo.png"
+                alt="House Advantage"
+                width={60}
+                height={40}
+                unoptimized
+                priority
+              />
+              House Advantage
+            </Link>
             <div className="nav-links">
               <Link href="/">Daily</Link>
               <Link href="/politicians">Politicians</Link>
