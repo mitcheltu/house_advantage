@@ -26,10 +26,12 @@ from backend.gemini.ffmpeg_assembly import (
     assemble_video_with_audio,
     assemble_and_register_trade_video,
     update_media_asset_storage_url,
+    overlay_citation_images,
     write_media_asset,
 )
 from backend.gemini.gcs_storage import gcs_enabled, upload_file_to_gcs
 from backend.gemini.media_generation import (
+    generate_citation_image,
     generate_video_from_prompt,
     synthesize_narration_audio,
 )
@@ -79,7 +81,8 @@ def _fetch_severe_trade_media_jobs(report_date: date, limit: int = 100) -> list[
           ar.id AS audit_report_id,
           ar.video_prompt,
           ar.narration_script,
-          ar.headline
+          ar.headline,
+          ar.citation_image_prompts
         FROM trades t
         JOIN anomaly_scores a ON a.trade_id = t.id
         LEFT JOIN audit_reports ar ON ar.trade_id = t.id
@@ -110,6 +113,98 @@ def _has_ready_video_asset(trade_id: int) -> bool:
     with engine.connect() as conn:
         row = conn.execute(sql, {"trade_id": trade_id}).mappings().first()
     return row is not None
+
+
+def _fetch_citation_image_paths(trade_id: int) -> list[str]:
+    """Fetch file paths for ready citation_image assets for a trade."""
+    engine = get_engine()
+    sql = text(
+        """
+        SELECT storage_url
+        FROM media_assets
+        WHERE trade_id = :trade_id
+          AND asset_type = 'citation_image'
+          AND generation_status = 'ready'
+        ORDER BY generated_at ASC
+        LIMIT 3
+        """
+    )
+    try:
+        with engine.connect() as conn:
+            rows = conn.execute(sql, {"trade_id": trade_id}).mappings().all()
+        return [str(r["storage_url"]) for r in rows]
+    except Exception:
+        return []
+
+
+def _generate_citation_images_for_severe(
+    report_date: date,
+    staging_dir: Path,
+    limit: int = 100,
+) -> dict[str, Any]:
+    """Stage 1.5: Generate citation card images for SEVERE trades with citation_image_prompts."""
+    import json as _json
+
+    staging_dir.mkdir(parents=True, exist_ok=True)
+    citation_dir = staging_dir / "citation_images"
+    citation_dir.mkdir(parents=True, exist_ok=True)
+
+    jobs = _fetch_severe_trade_media_jobs(report_date=report_date, limit=limit)
+    generated = 0
+    skipped = 0
+    failed: list[dict[str, Any]] = []
+
+    for job in jobs:
+        trade_id = int(job["trade_id"])
+        raw_prompts = job.get("citation_image_prompts")
+
+        if not raw_prompts:
+            skipped += 1
+            continue
+
+        if isinstance(raw_prompts, str):
+            try:
+                prompts = _json.loads(raw_prompts)
+            except (ValueError, TypeError):
+                prompts = []
+        else:
+            prompts = raw_prompts if isinstance(raw_prompts, list) else []
+
+        if not prompts:
+            skipped += 1
+            continue
+
+        audit_report_id = int(job["audit_report_id"]) if job.get("audit_report_id") else _fetch_audit_report_id(trade_id)
+
+        for idx, prompt in enumerate(prompts[:3]):
+            img_path = citation_dir / f"trade_{trade_id}_citation_{idx}.png"
+            try:
+                meta = generate_citation_image(
+                    prompt=str(prompt),
+                    output_path=str(img_path),
+                )
+                try:
+                    write_media_asset(
+                        trade_id=trade_id,
+                        audit_report_id=audit_report_id,
+                        asset_type="citation_image",
+                        storage_url=str(img_path),
+                        file_size_bytes=meta.get("file_size_bytes"),
+                        generation_status="ready",
+                        model_used=str(meta.get("provider") or "image-gen"),
+                    )
+                except Exception:
+                    pass  # media_assets table may not exist yet
+                generated += 1
+            except Exception as exc:
+                failed.append({"trade_id": trade_id, "idx": idx, "error": str(exc)})
+
+    return {
+        "date": report_date.isoformat(),
+        "generated": generated,
+        "skipped": skipped,
+        "failed": failed,
+    }
 
 
 def _generate_trade_media_for_severe(
@@ -158,6 +253,7 @@ def _generate_trade_media_for_severe(
                 prompt=video_prompt,
                 output_path=str(video_path),
                 duration_seconds=float(audio_meta.get("duration_seconds") or 30.0),
+                reference_image_paths=_fetch_citation_image_paths(trade_id) or None,
             )
 
             audio_storage_url = str(audio_path)
@@ -363,11 +459,18 @@ def run_daily_evidence_pipeline(
     target_date = _to_date(report_date)
 
     stage1 = contextualize_flagged_trades(limit=contextualize_limit, since_date=target_date)
-    stage2 = generate_daily_report(report_date=target_date)
 
     staging_dir = Path(os.getenv("MEDIA_STAGING_DIR", "backend/data/media_staging"))
     output_dir = Path(os.getenv("MEDIA_OUTPUT_DIR", "backend/data/media"))
     force_media_regen = os.getenv("MEDIA_FORCE_REGENERATE", "false").strip().lower() in {"1", "true", "yes"}
+
+    stage1_5 = _generate_citation_images_for_severe(
+        report_date=target_date,
+        staging_dir=staging_dir,
+        limit=severe_media_limit,
+    )
+
+    stage2 = generate_daily_report(report_date=target_date)
 
     stage3 = _generate_trade_media_for_severe(
         report_date=target_date,
@@ -389,6 +492,7 @@ def run_daily_evidence_pipeline(
         "report_date": target_date.isoformat(),
         "stages": {
             "contextualize_flagged": stage1,
+            "citation_image_generation": stage1_5,
             "daily_scriptwriter": stage2,
             "trade_media_generation": stage3,
             "daily_media_generation": stage4,

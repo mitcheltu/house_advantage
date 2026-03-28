@@ -16,7 +16,7 @@ from typing import Any
 from sqlalchemy import text
 
 from backend.db.connection import get_engine
-from backend.scoring.dual_scorer import _parse_sector
+from backend.scoring.dual_scorer import BILL_SECTOR_MAP, _parse_sector
 
 try:
     import google.generativeai as genai
@@ -28,6 +28,17 @@ SYSTEM_PROMPT = """
 You are a non-partisan financial ethics investigator.
 Given congressional trade data and dual anomaly scores, produce factual,
 concise analysis with no speculation and output strict JSON.
+
+When generating citation_image_prompts, each prompt must instruct an image model
+to create a dark-themed infographic citation card with the following design:
+- Background: #090d14, text: #e5ebf5, clean sans-serif typography
+- Top edge: severity stripe in red (#dc2626 for SEVERE) or amber (#d97706 for SYSTEMIC)
+- Large bold title: the bill number and full title (e.g. "H.R. 3847 — National Defense Authorization Act")
+- Small badge/pill below title: "Policy Area: {policy_area}"
+- Two-column key details: Status (latest action + date), Sponsor (if known),
+  Trade Connection (politician name, dollar amount, ticker, timing relative to bill action)
+- Bottom: small source URL text (congress.gov link) and watermark "AI-Generated — House Advantage"
+- Aspect ratio 16:9, high legibility, no photographs, no real faces, data visualization style
 """.strip()
 
 
@@ -58,7 +69,64 @@ def _safe_json_loads(raw: str) -> dict[str, Any]:
     return json.loads(text_raw)
 
 
+def _fetch_nearby_bills(trade_date, trade_sector, limit: int = 3) -> list[dict[str, Any]]:
+    """Fetch bills matching the trade's sector within ±90 days of trade_date.
+
+    Returns up to *limit* bills ordered by proximity (closest first).
+    """
+    if not trade_date or not trade_sector:
+        return []
+
+    sectors = trade_sector if isinstance(trade_sector, list) else _parse_sector(trade_sector)
+    if not sectors:
+        return []
+
+    # Reverse-map: find policy_area values whose BILL_SECTOR_MAP output is in the trade's sectors
+    matching_policy_areas = [
+        pa for pa, s in BILL_SECTOR_MAP.items() if s in sectors
+    ]
+    if not matching_policy_areas:
+        return []
+
+    # Build parameterised IN clause
+    placeholders = ", ".join(f":pa{i}" for i in range(len(matching_policy_areas)))
+    params: dict[str, Any] = {f"pa{i}": pa for i, pa in enumerate(matching_policy_areas)}
+    params["trade_date"] = str(trade_date)
+    params["limit"] = limit
+
+    sql = text(f"""
+        SELECT
+          bill_id, title, policy_area, latest_action_date, url
+        FROM bills
+        WHERE policy_area IN ({placeholders})
+          AND latest_action_date IS NOT NULL
+          AND latest_action_date BETWEEN DATE_SUB(:trade_date, INTERVAL 90 DAY)
+                                     AND DATE_ADD(:trade_date, INTERVAL 90 DAY)
+        ORDER BY ABS(DATEDIFF(latest_action_date, :trade_date)) ASC
+        LIMIT :limit
+    """)
+
+    engine = get_engine()
+    with engine.connect() as conn:
+        rows = conn.execute(sql, params).mappings().all()
+        return [dict(r) for r in rows]
+
+
 def build_initial_message(trade: dict[str, Any]) -> str:
+    # Build nearby bills section
+    bills_section = ""
+    nearby_bills = trade.get("nearby_bills") or []
+    if nearby_bills:
+        bill_lines = []
+        for b in nearby_bills:
+            bill_lines.append(
+                f"  - {b.get('bill_id')}: {b.get('title')}\n"
+                f"    Policy Area: {b.get('policy_area')}\n"
+                f"    Action Date: {b.get('latest_action_date')}\n"
+                f"    URL: {b.get('url') or 'N/A'}"
+            )
+        bills_section = "\nRelevant Bills (sector-matched, ±90 days):\n" + "\n".join(bill_lines) + "\n"
+
     return f"""
 Investigate this congressional trade and produce JSON output only.
 
@@ -85,7 +153,7 @@ Feature Snapshot:
 - amount_zscore: {trade.get('feat_amount_zscore')}
 - cluster_score: {trade.get('feat_cluster_score')}
 - disclosure_lag: {trade.get('feat_disclosure_lag')}
-
+{bills_section}
 Output schema:
 {{
   "headline": "string <= 120 chars",
@@ -97,7 +165,8 @@ Output schema:
   }},
   "disclaimer": "string",
   "video_prompt": "string or null",
-  "narration_script": "string or null"
+  "narration_script": "string or null",
+  "citation_image_prompts": ["one detailed image-generation prompt per relevant bill following the citation card design spec in system instructions, or empty list if no bills"]
 }}
 """.strip()
 
@@ -139,7 +208,7 @@ def _fallback_report(trade: dict[str, Any]) -> ContextualizerResult:
 
 def _generate_with_gemini(initial_message: str) -> ContextualizerResult:
     api_key = os.getenv("GEMINI_API_KEY")
-    model_name = os.getenv("GEMINI_MODEL", "gemini-1.5-pro")
+    model_name = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
 
     if not api_key or genai is None:
         raise RuntimeError("Gemini client unavailable or GEMINI_API_KEY not set")
@@ -200,6 +269,13 @@ def _fetch_trade_context(trade_id: int) -> dict[str, Any] | None:
         # Parse stringified sector lists from DB into clean display format
         sectors = _parse_sector(result.get("industry_sector"))
         result["industry_sector"] = ", ".join(sectors) if sectors else None
+
+        # Fetch nearby bills matching trade sector within ±90 days
+        result["nearby_bills"] = _fetch_nearby_bills(
+            trade_date=result.get("trade_date"),
+            trade_sector=sectors,
+        )
+
         return result
 
 
@@ -213,10 +289,12 @@ def _upsert_audit_report(trade_id: int, trade: dict[str, Any], result: Contextua
         INSERT INTO audit_reports (
           trade_id, headline, risk_level, severity_quadrant, narrative,
           evidence_json, bill_excerpt, disclaimer, video_prompt, narration_script,
+          citation_image_prompts,
           gemini_model, prompt_tokens, output_tokens
         ) VALUES (
           :trade_id, :headline, :risk_level, :severity_quadrant, :narrative,
           :evidence_json, :bill_excerpt, :disclaimer, :video_prompt, :narration_script,
+          :citation_image_prompts,
           :gemini_model, :prompt_tokens, :output_tokens
         )
         ON DUPLICATE KEY UPDATE
@@ -230,6 +308,7 @@ def _upsert_audit_report(trade_id: int, trade: dict[str, Any], result: Contextua
           disclaimer = VALUES(disclaimer),
           video_prompt = VALUES(video_prompt),
           narration_script = VALUES(narration_script),
+          citation_image_prompts = VALUES(citation_image_prompts),
           gemini_model = VALUES(gemini_model),
           prompt_tokens = VALUES(prompt_tokens),
           output_tokens = VALUES(output_tokens)
@@ -247,6 +326,7 @@ def _upsert_audit_report(trade_id: int, trade: dict[str, Any], result: Contextua
         "disclaimer": payload.get("disclaimer") or "Automated analysis; interpret with caution.",
         "video_prompt": payload.get("video_prompt"),
         "narration_script": payload.get("narration_script"),
+        "citation_image_prompts": json.dumps(payload.get("citation_image_prompts") or []),
         "gemini_model": result.model,
         "prompt_tokens": result.prompt_tokens,
         "output_tokens": result.output_tokens,

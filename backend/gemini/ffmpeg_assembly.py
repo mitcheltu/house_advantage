@@ -2,12 +2,14 @@
 ffmpeg-based media assembly utilities.
 
 - Muxes narration audio + generated video.
+- Overlays citation card images onto video as picture-in-picture.
 - Writes/updates media asset metadata in media_assets table.
 """
 
 from __future__ import annotations
 
 import os
+import subprocess
 import shutil
 from pathlib import Path
 from typing import Any
@@ -181,4 +183,78 @@ def assemble_and_register_trade_video(
     return {
         "asset_id": asset_id,
         **assembly,
+    }
+
+
+def overlay_citation_images(
+    video_path: str,
+    citation_image_paths: list[str],
+    output_path: str,
+    image_width: int = 300,
+    overwrite: bool = True,
+) -> dict[str, Any]:
+    """Overlay citation card images as picture-in-picture at timed intervals.
+
+    Each citation image is scaled to *image_width* pixels wide and shown in the
+    upper-right corner of the video for a segment of the video duration.  This is
+    the FFmpeg fallback for when Veo reference images are unavailable.
+    """
+    ffmpeg_bin = _resolve_ffmpeg_bin()
+    video_duration = _probe_duration(Path(video_path)) or 30.0
+
+    if not citation_image_paths:
+        shutil.copy2(video_path, output_path)
+        out_path = Path(output_path)
+        return {
+            "output_path": str(out_path),
+            "file_size_bytes": out_path.stat().st_size if out_path.exists() else None,
+            "duration_seconds": video_duration,
+        }
+
+    n_images = min(len(citation_image_paths), 3)
+    segment_duration = video_duration / (n_images + 1)
+
+    # Build ffmpeg command with filter_complex
+    cmd_parts: list[str] = [ffmpeg_bin]
+    if overwrite:
+        cmd_parts.append("-y")
+    cmd_parts.extend(["-i", video_path])
+    for img_path in citation_image_paths[:n_images]:
+        cmd_parts.extend(["-i", img_path])
+
+    # Build overlay filter graph
+    filter_parts: list[str] = []
+    prev_label = "0:v"
+    for i in range(n_images):
+        start_time = segment_duration * (i + 0.5)
+        end_time = start_time + segment_duration
+        scale_label = f"ovl{i}"
+        out_label = f"tmp{i}" if i < n_images - 1 else "vout"
+
+        filter_parts.append(f"[{i + 1}:v]scale={image_width}:-1[{scale_label}]")
+        filter_parts.append(
+            f"[{prev_label}][{scale_label}]overlay=W-w-30:30:"
+            f"enable='between(t,{start_time:.1f},{end_time:.1f})'[{out_label}]"
+        )
+        prev_label = out_label
+
+    filter_complex = ";".join(filter_parts)
+    cmd_parts.extend([
+        "-filter_complex", filter_complex,
+        "-map", "[vout]",
+        "-map", "0:a?",
+        "-codec:v", "libx264",
+        "-pix_fmt", "yuv420p",
+        "-codec:a", "copy",
+        "-movflags", "+faststart",
+        output_path,
+    ])
+
+    subprocess.run(cmd_parts, check=True, capture_stdout=True, capture_stderr=True)
+
+    out_path = Path(output_path)
+    return {
+        "output_path": str(out_path),
+        "file_size_bytes": out_path.stat().st_size if out_path.exists() else None,
+        "duration_seconds": _probe_duration(out_path),
     }

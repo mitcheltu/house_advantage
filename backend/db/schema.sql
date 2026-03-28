@@ -364,6 +364,7 @@ CREATE TABLE IF NOT EXISTS audit_reports (
     -- V3: GenMedia output fields (written by Gemini)
     video_prompt        TEXT,
     narration_script    TEXT,
+    citation_image_prompts JSON DEFAULT NULL,
 
     gemini_model        VARCHAR(80),
     prompt_tokens       INT,
@@ -380,7 +381,7 @@ CREATE TABLE IF NOT EXISTS media_assets (
     id                  BIGINT AUTO_INCREMENT PRIMARY KEY,
     trade_id            INT NOT NULL,
     audit_report_id     BIGINT,
-    asset_type          ENUM('audio','video','thumbnail') NOT NULL,
+    asset_type          ENUM('audio','video','thumbnail','citation_image') NOT NULL,
     storage_url         VARCHAR(500) NOT NULL,
     file_size_bytes     INT,
     duration_seconds    FLOAT,

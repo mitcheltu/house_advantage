@@ -410,6 +410,88 @@ def synthesize_narration_audio(script_text: str, output_path: str) -> dict[str, 
     return fallback
 
 
+def _generate_placeholder_image(output_path: Path) -> dict[str, Any]:
+    """Generate a minimal dark placeholder PNG."""
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    # Minimal 1x1 dark PNG
+    output_path.write_bytes(base64.b64decode(
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=="
+    ))
+    return {
+        "path": str(output_path),
+        "file_size_bytes": output_path.stat().st_size if output_path.exists() else None,
+        "provider": "placeholder-image",
+    }
+
+
+def generate_citation_image(
+    prompt: str,
+    output_path: str,
+    aspect_ratio: str = "16:9",
+) -> dict[str, Any]:
+    """Generate a bill citation card image using Nano Banana 2 (Gemini image generation).
+
+    Falls back to placeholder when provider is disabled or API key is missing.
+    """
+    output = Path(output_path)
+    output.parent.mkdir(parents=True, exist_ok=True)
+
+    provider = os.getenv("IMAGE_GEN_PROVIDER", "nano-banana").strip().lower()
+    if provider == "disabled":
+        return _generate_placeholder_image(output)
+
+    api_key = os.getenv("GEMINI_API_KEY", "").strip()
+    if not api_key:
+        return _generate_placeholder_image(output)
+
+    base = os.getenv("GEMINI_API_BASE", "https://generativelanguage.googleapis.com/v1beta").rstrip("/")
+    model = os.getenv("IMAGE_GEN_MODEL", "gemini-3.1-flash-image-preview")
+    endpoint = f"{base}/models/{model}:generateContent"
+
+    payload = {
+        "contents": [{"parts": [{"text": prompt}]}],
+        "generationConfig": {
+            "responseModalities": ["IMAGE"],
+            "responseMimeType": "image/png",
+        },
+    }
+
+    try:
+        resp = requests.post(
+            endpoint,
+            params={"key": api_key},
+            headers={"Content-Type": "application/json"},
+            json=payload,
+            timeout=120,
+        )
+        resp.raise_for_status()
+        data = _json_response(resp)
+
+        candidates = data.get("candidates", [])
+        for candidate in candidates:
+            parts = candidate.get("content", {}).get("parts", [])
+            for part in parts:
+                inline_data = part.get("inlineData") or part.get("inline_data") or {}
+                b64 = inline_data.get("data", "")
+                if b64:
+                    image_bytes = base64.b64decode(b64)
+                    output.write_bytes(image_bytes)
+                    return {
+                        "path": str(output),
+                        "file_size_bytes": output.stat().st_size,
+                        "provider": f"nano-banana:{model}",
+                    }
+
+        result = _generate_placeholder_image(output)
+        result["error"] = "No image data in API response"
+        return result
+
+    except Exception as exc:
+        result = _generate_placeholder_image(output)
+        result["error"] = str(exc)
+        return result
+
+
 def _download_to_file(
     url: str,
     output_path: Path,
@@ -629,6 +711,7 @@ def _try_google_genai_veo(
     duration_seconds: float,
     aspect_ratio: str,
     timeout_seconds: int,
+    reference_image_paths: list[str] | None = None,
 ) -> dict[str, Any] | None:
     if not api_key:
         return None
@@ -636,6 +719,24 @@ def _try_google_genai_veo(
     base = os.getenv("VEO_GOOGLE_BASE_URL", "https://generativelanguage.googleapis.com/v1beta").rstrip("/")
     model = os.getenv("VEO_MODEL", "veo-3.1-generate-preview")
     clamped_duration = int(max(4, min(120, round(duration_seconds))))
+
+    # Build reference images for Veo 3.1 (up to 3 per API constraint)
+    reference_images: list[dict[str, Any]] = []
+    if reference_image_paths:
+        ref_type = os.getenv("VEO_REFERENCE_TYPE", "REFERENCE_TYPE_STYLE")
+        for img_path in reference_image_paths[:3]:
+            img_file = Path(img_path)
+            if img_file.exists():
+                img_b64 = base64.b64encode(img_file.read_bytes()).decode("ascii")
+                reference_images.append({
+                    "referenceType": ref_type,
+                    "referenceImage": {
+                        "image": {"imageBytes": img_b64}
+                    },
+                })
+    # Force 8s duration when references are used (API requirement)
+    if reference_images:
+        clamped_duration = 8
 
     method_mode = os.getenv("VEO_GOOGLE_METHOD", "auto").strip().lower()
     supported = {m.lower() for m in _get_google_supported_methods(base, model, api_key)}
@@ -678,6 +779,8 @@ def _try_google_genai_veo(
                     "aspectRatio": aspect_ratio,
                 },
             }
+            if reference_images:
+                payload["referenceImages"] = reference_images
 
         try:
             _veo_debug("google-request", {"endpoint": endpoint, "method": method, "aspect_ratio": aspect_ratio})
@@ -759,6 +862,7 @@ def generate_video_from_prompt(
     output_path: str,
     duration_seconds: float,
     aspect_ratio: str = "9:16",
+    reference_image_paths: list[str] | None = None,
 ) -> dict[str, Any]:
     output = Path(output_path)
     output.parent.mkdir(parents=True, exist_ok=True)
@@ -776,6 +880,7 @@ def generate_video_from_prompt(
             duration_seconds=duration_seconds,
             aspect_ratio=aspect_ratio,
             timeout_seconds=timeout_seconds,
+            reference_image_paths=reference_image_paths,
         )
         if result:
             return result

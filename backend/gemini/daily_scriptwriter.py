@@ -99,7 +99,7 @@ def _fallback_daily_payload(report_date: date, trades: list[dict[str, Any]]) -> 
 
 def _generate_with_gemini(report_date: date, trades: list[dict[str, Any]]) -> tuple[dict[str, Any], str | None]:
     api_key = os.getenv("GEMINI_API_KEY")
-    model_name = os.getenv("GEMINI_MODEL", "gemini-1.5-pro")
+    model_name = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
     if not api_key or genai is None:
         raise RuntimeError("Gemini not configured")
 
