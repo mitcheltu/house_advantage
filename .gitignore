@@ -8,3 +8,4 @@ venv/
 node_modules/
 .next/
 *.log
+house_advantage_dump.sql
