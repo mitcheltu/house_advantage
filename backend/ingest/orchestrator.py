@@ -3,28 +3,32 @@ Data Collection Orchestrator
 
 Runs all collectors in the correct dependency order:
   1.  Congress.gov  → politicians, committees, votes, bills
-  1a. Committee Memberships → from unitedstates/congress-legislators repo
-  1b. Senate Votes  → from senate.gov XML roll-call data
-  2.  House Clerk   → House stock trade disclosures (PDF scraping)
-  3.  Senate eFD    → Senate stock trade disclosures (HTML scraping)
-  4.  Merge Trades  → combine House + Senate into unified CSV
-  5.  OpenFEC       → candidates, finance totals, PAC contributions
-  6.  yfinance      → stock prices (needs tickers from trades)
-  7.  SEC 13-F      → institutional holdings
-  8.  OpenFIGI      → CUSIP-to-ticker mapping (needs CUSIPs from 13-F)
-  9.  GovInfo       → bill full text
-  10. DB Load       → push all CSVs to MySQL
+  2.  Committee Memberships → from unitedstates/congress-legislators repo
+  3.  Senate Votes  → from senate.gov XML roll-call data
+  4.  Enrich Bills  → backfill policy_area + propagate sectors to votes
+  5.  House Clerk   → House stock trade disclosures (PDF scraping)
+  6.  Senate eFD    → Senate stock trade disclosures (HTML scraping)
+  7.  Merge Trades  → combine House + Senate into unified CSV
+  8.  OpenFEC       → candidates, finance totals, PAC contributions
+  9.  yfinance      → stock prices (needs tickers from trades)
+  10. SEC 13-F      → institutional holdings
+  11. OpenFIGI      → CUSIP-to-ticker mapping (needs CUSIPs from 13-F)
+  12. GovInfo       → bill full text
+  13. DB Load       → push all CSVs to MySQL
 
 Usage:
-    python -m backend.ingest.orchestrator            # Run all
-    python -m backend.ingest.orchestrator --step 2    # Run step 2 only
-    python -m backend.ingest.orchestrator --skip-db   # Skip MySQL load
+    python -m backend.ingest.orchestrator               # Run all
+    python -m backend.ingest.orchestrator --step 4       # Run step 4 only (enrich bills)
+    python -m backend.ingest.orchestrator --skip-db      # Skip MySQL load
+    python -m backend.ingest.orchestrator --strict       # Halt on data quality issues
 """
 import argparse
 import logging
 import sys
 import time
 from pathlib import Path
+
+import pandas as pd
 
 logging.basicConfig(
     level=logging.INFO,
@@ -59,6 +63,18 @@ def step_1b_senate_votes():
     log.info("STEP 1b: Senate Votes — senate.gov XML")
     log.info("=" * 60)
     collect_senate_votes()
+
+
+def step_1c_enrich_bills():
+    """Enrich bills with missing policy_area and propagate sectors to votes."""
+    from backend.ingest.collectors.collect_congress_gov import (
+        enrich_bills_policy_area, enrich_votes_with_sectors,
+    )
+    log.info("=" * 60)
+    log.info("STEP 1c: Enrich Bills — Backfill policy_area + vote sectors")
+    log.info("=" * 60)
+    enrich_bills_policy_area()
+    enrich_votes_with_sectors()
 
 
 def step_2_house():
@@ -142,19 +158,102 @@ def step_10_db_load():
     setup_all()
 
 
+# ── Data Quality Validation ──────────────────────────────────
+
+DATA_RAW = Path(__file__).resolve().parent.parent / "data" / "raw"
+
+# Thresholds: (csv_filename, column, max_null_pct, min_rows)
+QUALITY_CHECKS = {
+    # After Step 1 (Congress.gov) or Step 4 (Enrich Bills)
+    4: [
+        ("bills_raw.csv", "policy_area", 0.50, 100,
+         "Bills missing policy_area will cause NULL bill_proximity features"),
+        ("bills_raw.csv", "latest_action_date", 0.30, 100,
+         "Bills missing latest_action_date cannot be used for proximity calc"),
+        ("bills_raw.csv", "url", 0.50, 100,
+         "Bills missing URL cannot be used by Gemini contextualizer"),
+    ],
+    # After Step 7 (Merge Trades)
+    7: [
+        ("congressional_trades_raw.csv", "ticker", 0.05, 50,
+         "Trades missing ticker will be dropped during DB load"),
+        ("congressional_trades_raw.csv", "trade_date", 0.02, 50,
+         "Trades missing trade_date are dropped (NOT NULL in schema)"),
+    ],
+}
+
+
+def validate_step_output(step_num: int, strict: bool = False) -> bool:
+    """
+    Run data quality checks after a pipeline step.
+    Returns True if all checks pass. Logs warnings/errors.
+    If strict=True, returns False on any quality warning.
+    """
+    checks = QUALITY_CHECKS.get(step_num)
+    if not checks:
+        return True
+
+    all_ok = True
+    log.info(f"  Running quality checks for step {step_num}...")
+
+    for csv_name, column, max_null_pct, min_rows, msg in checks:
+        csv_path = DATA_RAW / csv_name
+        if not csv_path.exists():
+            log.warning(f"    SKIP {csv_name}: file not found")
+            continue
+
+        try:
+            df = pd.read_csv(csv_path)
+        except Exception as e:
+            log.error(f"    FAIL {csv_name}: could not read CSV: {e}")
+            all_ok = False
+            continue
+
+        # Check minimum rows
+        if len(df) < min_rows:
+            log.warning(f"    WARN {csv_name}: only {len(df)} rows (expected ≥{min_rows})")
+            if strict:
+                all_ok = False
+
+        # Check null rate
+        if column in df.columns:
+            null_count = df[column].isna().sum()
+            null_pct = null_count / len(df) if len(df) > 0 else 0
+            if null_pct > max_null_pct:
+                log.warning(
+                    f"    WARN {csv_name}.{column}: "
+                    f"{null_pct:.1%} null ({null_count}/{len(df)}) — "
+                    f"threshold {max_null_pct:.0%}. {msg}"
+                )
+                if strict:
+                    all_ok = False
+            else:
+                log.info(
+                    f"    OK   {csv_name}.{column}: "
+                    f"{null_pct:.1%} null ({null_count}/{len(df)})"
+                )
+        else:
+            log.warning(f"    WARN {csv_name}: column '{column}' not found")
+            if strict:
+                all_ok = False
+
+    return all_ok
+
+
 STEPS = {
     1:  ("Congress.gov", step_1_congress),
     2:  ("Committee Memberships", step_1a_committee_memberships),
     3:  ("Senate Votes", step_1b_senate_votes),
-    4:  ("House Disclosures", step_2_house),
-    5:  ("Senate Disclosures", step_3_senate),
-    6:  ("Merge Trades", step_4_merge),
-    7:  ("OpenFEC", step_5_fec),
-    8:  ("yfinance", step_6_prices),
-    9:  ("SEC 13-F", step_7_13f),
-    10: ("OpenFIGI", step_8_figi),
-    11: ("GovInfo", step_9_govinfo),
-    12: ("MySQL Load", step_10_db_load),
+    4:  ("Enrich Bills", step_1c_enrich_bills),
+    5:  ("House Disclosures", step_2_house),
+    6:  ("Senate Disclosures", step_3_senate),
+    7:  ("Merge Trades", step_4_merge),
+    8:  ("OpenFEC", step_5_fec),
+    9:  ("yfinance", step_6_prices),
+    10: ("SEC 13-F", step_7_13f),
+    11: ("OpenFIGI", step_8_figi),
+    12: ("GovInfo", step_9_govinfo),
+    13: ("MySQL Load", step_10_db_load),
 }
 
 
@@ -175,12 +274,14 @@ def run_step(step_num: int) -> bool:
 
 def main():
     parser = argparse.ArgumentParser(description="House Advantage Data Orchestrator")
-    parser.add_argument("--step", type=int, help="Run a specific step (1-12)")
+    parser.add_argument("--step", type=int, help="Run a specific step (1-13)")
     parser.add_argument("--from-step", type=int, default=1, help="Start from step N")
-    parser.add_argument("--to-step", type=int, default=12, help="End at step N")
-    parser.add_argument("--skip-db", action="store_true", help="Skip MySQL load (step 12)")
+    parser.add_argument("--to-step", type=int, default=13, help="End at step N")
+    parser.add_argument("--skip-db", action="store_true", help="Skip MySQL load (step 13)")
     parser.add_argument("--continue-on-error", action="store_true",
                         help="Continue to next step even if current fails")
+    parser.add_argument("--strict", action="store_true",
+                        help="Halt on data quality warnings (e.g. high null rates)")
     args = parser.parse_args()
 
     log.info("House Advantage — Data Collection Orchestrator")
@@ -188,12 +289,12 @@ def main():
 
     if args.step:
         if args.step not in STEPS:
-            log.error(f"Invalid step: {args.step}. Valid: 1-12")
+            log.error(f"Invalid step: {args.step}. Valid: 1-13")
             sys.exit(1)
         success = run_step(args.step)
         sys.exit(0 if success else 1)
 
-    end_step = 11 if args.skip_db else args.to_step
+    end_step = 12 if args.skip_db else args.to_step
     results = {}
 
     for step_num in range(args.from_step, end_step + 1):
@@ -204,6 +305,14 @@ def main():
         if not success and not args.continue_on_error:
             log.error(f"Stopping at step {step_num}. Use --continue-on-error to proceed.")
             break
+
+        # Run quality checks after steps that produce critical data
+        if success and step_num in QUALITY_CHECKS:
+            quality_ok = validate_step_output(step_num, strict=args.strict)
+            if not quality_ok and args.strict:
+                log.error(f"Quality check failed for step {step_num} (--strict mode). Stopping.")
+                results[step_num] = False
+                break
 
     # Summary
     log.info("")

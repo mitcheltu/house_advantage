@@ -45,11 +45,12 @@ def rate_limited_get(
     headers: dict = None,
     params: dict = None,
     delay: float = 0.5,
-    max_retries: int = 3,
+    max_retries: int = 5,
     timeout: int = 60,
 ) -> requests.Response:
     """
     GET request with automatic retry on 429/5xx and inter-request delay.
+    Uses exponential backoff: wait = min(base * 2^attempt, 120) seconds.
     """
     log = logging.getLogger("http")
     for attempt in range(1, max_retries + 1):
@@ -59,29 +60,35 @@ def rate_limited_get(
 
             if resp.status_code in (429, 403):
                 try:
-                    wait = int(resp.headers.get("Retry-After", 10 * attempt))
+                    wait = int(resp.headers.get("Retry-After", 0))
                 except (ValueError, TypeError):
-                    wait = 10 * attempt
+                    wait = 0
+                # Use Retry-After if provided, else exponential backoff
+                if wait <= 0:
+                    wait = min(10 * (2 ** (attempt - 1)), 120)
                 log.warning(f"Rate limited ({resp.status_code}) on {url}. "
                             f"Waiting {wait}s (attempt {attempt}/{max_retries})...")
                 time.sleep(wait)
                 continue
 
             if resp.status_code >= 500:
+                wait = min(5 * (2 ** (attempt - 1)), 60)
                 log.warning(f"Server error {resp.status_code} on {url}. "
-                            f"Retry {attempt}/{max_retries}...")
-                time.sleep(5 * attempt)
+                            f"Retry {attempt}/{max_retries} after {wait}s...")
+                time.sleep(wait)
                 continue
 
             resp.raise_for_status()
             return resp
 
         except requests.exceptions.Timeout:
-            log.warning(f"Timeout on {url}. Retry {attempt}/{max_retries}...")
-            time.sleep(5 * attempt)
+            wait = min(5 * (2 ** (attempt - 1)), 60)
+            log.warning(f"Timeout on {url}. Retry {attempt}/{max_retries} after {wait}s...")
+            time.sleep(wait)
         except requests.exceptions.ConnectionError:
-            log.warning(f"Connection error on {url}. Retry {attempt}/{max_retries}...")
-            time.sleep(5 * attempt)
+            wait = min(5 * (2 ** (attempt - 1)), 60)
+            log.warning(f"Connection error on {url}. Retry {attempt}/{max_retries} after {wait}s...")
+            time.sleep(wait)
 
     raise RuntimeError(f"Failed after {max_retries} retries: {url}")
 

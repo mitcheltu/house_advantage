@@ -178,6 +178,54 @@ class TestStep1RawCSVs:
             f"Missing columns: {required - set(df.columns)}"
         )
 
+    def test_bills_csv_exists(self):
+        path = DATA_RAW / "bills_raw.csv"
+        if not path.exists():
+            pytest.skip("bills_raw.csv not found — run step 1 first")
+        assert path.stat().st_size > 1000, "bills_raw.csv is suspiciously small"
+
+    def test_bills_csv_columns(self):
+        path = DATA_RAW / "bills_raw.csv"
+        if not path.exists():
+            pytest.skip("bills_raw.csv not found")
+        df = pd.read_csv(path)
+        required = {"id", "congress", "bill_number", "title", "policy_area",
+                     "latest_action", "latest_action_date", "url"}
+        assert required.issubset(set(df.columns)), (
+            f"Missing columns: {required - set(df.columns)}"
+        )
+
+    def test_bills_csv_policy_area_populated(self):
+        path = DATA_RAW / "bills_raw.csv"
+        if not path.exists():
+            pytest.skip("bills_raw.csv not found")
+        df = pd.read_csv(path)
+        rate = df["policy_area"].notna().mean()
+        assert rate >= 0.50, (
+            f"policy_area only {rate*100:.1f}% populated — expected ≥50%. "
+            "Run enrichment step to backfill."
+        )
+
+    def test_bills_csv_latest_action_date_populated(self):
+        path = DATA_RAW / "bills_raw.csv"
+        if not path.exists():
+            pytest.skip("bills_raw.csv not found")
+        df = pd.read_csv(path)
+        rate = df["latest_action_date"].notna().mean()
+        assert rate >= 0.70, (
+            f"latest_action_date only {rate*100:.1f}% populated — expected ≥70%"
+        )
+
+    def test_bills_csv_url_populated(self):
+        path = DATA_RAW / "bills_raw.csv"
+        if not path.exists():
+            pytest.skip("bills_raw.csv not found")
+        df = pd.read_csv(path)
+        rate = df["url"].notna().mean()
+        assert rate >= 0.50, (
+            f"url only {rate*100:.1f}% populated — expected ≥50%"
+        )
+
 
 # ============================================================
 # 4. DATABASE DATA VALIDATION — Tables with data
@@ -227,6 +275,52 @@ class TestDBDataLoaded:
         count = _table_count(db_conn, "fec_candidate_totals")
         assert count >= 50, (
             f"Expected ≥50 FEC totals in DB, got {count}."
+        )
+
+    def test_bills_table_populated(self, db_conn):
+        count = _table_count(db_conn, "bills")
+        assert count > 0, (
+            "bills table is empty — run steps 1 + 13 (Congress.gov + MySQL Load)"
+        )
+
+    def test_bills_have_policy_area(self, db_conn):
+        from sqlalchemy import text
+        total = _table_count(db_conn, "bills")
+        if total == 0:
+            pytest.skip("bills table is empty")
+        with_pa = db_conn.execute(text(
+            "SELECT COUNT(*) FROM bills WHERE policy_area IS NOT NULL"
+        )).scalar()
+        rate = with_pa / total
+        assert rate >= 0.50, (
+            f"Only {rate*100:.1f}% of bills have policy_area — expected ≥50%. "
+            "Run enrichment step to backfill."
+        )
+
+    def test_bills_have_latest_action_date(self, db_conn):
+        from sqlalchemy import text
+        total = _table_count(db_conn, "bills")
+        if total == 0:
+            pytest.skip("bills table is empty")
+        with_date = db_conn.execute(text(
+            "SELECT COUNT(*) FROM bills WHERE latest_action_date IS NOT NULL"
+        )).scalar()
+        rate = with_date / total
+        assert rate >= 0.70, (
+            f"Only {rate*100:.1f}% of bills have latest_action_date — expected ≥70%"
+        )
+
+    def test_bills_have_url(self, db_conn):
+        from sqlalchemy import text
+        total = _table_count(db_conn, "bills")
+        if total == 0:
+            pytest.skip("bills table is empty")
+        with_url = db_conn.execute(text(
+            "SELECT COUNT(*) FROM bills WHERE url IS NOT NULL AND url != ''"
+        )).scalar()
+        rate = with_url / total
+        assert rate >= 0.50, (
+            f"Only {rate*100:.1f}% of bills have url — expected ≥50%"
         )
 
 
@@ -422,6 +516,7 @@ class TestEmptyTableDiagnostics:
     @pytest.mark.parametrize("table,csv_file", [
         ("trades", "congressional_trades_raw.csv"),
         ("committee_memberships", "committee_memberships_raw.csv"),
+        ("bills", "bills_raw.csv"),
     ])
     def test_table_populated_if_csv_exists(self, db_conn, table, csv_file):
         """If the raw CSV exists and has data, the DB table should too."""
