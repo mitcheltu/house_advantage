@@ -145,6 +145,19 @@ def write_media_asset(
         return int(result.lastrowid)
 
 
+def update_media_asset_storage_url(asset_id: int, storage_url: str) -> None:
+    engine = get_engine()
+    sql = text(
+        """
+        UPDATE media_assets
+        SET storage_url = :storage_url
+        WHERE id = :asset_id
+        """
+    )
+    with engine.begin() as conn:
+        conn.execute(sql, {"storage_url": storage_url, "asset_id": asset_id})
+
+
 def assemble_and_register_trade_video(
     trade_id: int,
     video_path: str,

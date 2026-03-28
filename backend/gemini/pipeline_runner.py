@@ -25,8 +25,10 @@ from backend.gemini.daily_scriptwriter import generate_daily_report
 from backend.gemini.ffmpeg_assembly import (
     assemble_video_with_audio,
     assemble_and_register_trade_video,
+    update_media_asset_storage_url,
     write_media_asset,
 )
+from backend.gemini.gcs_storage import gcs_enabled, upload_file_to_gcs
 from backend.gemini.media_generation import (
     generate_video_from_prompt,
     synthesize_narration_audio,
@@ -158,18 +160,23 @@ def _generate_trade_media_for_severe(
                 duration_seconds=float(audio_meta.get("duration_seconds") or 30.0),
             )
 
+            audio_storage_url = str(audio_path)
+            if gcs_enabled():
+                audio_blob = f"media/trades/{trade_id}/audio_{report_date.isoformat()}.wav"
+                audio_storage_url = upload_file_to_gcs(str(audio_path), audio_blob, content_type="audio/wav")
+
             write_media_asset(
                 trade_id=trade_id,
                 audit_report_id=audit_report_id,
                 asset_type="audio",
-                storage_url=str(audio_path),
+                storage_url=audio_storage_url,
                 file_size_bytes=audio_meta.get("file_size_bytes"),
                 duration_seconds=audio_meta.get("duration_seconds"),
                 generation_status="ready",
                 model_used=str(audio_meta.get("provider") or "tts"),
             )
 
-            assemble_and_register_trade_video(
+            assembly = assemble_and_register_trade_video(
                 trade_id=trade_id,
                 video_path=str(video_path),
                 audio_path=str(audio_path),
@@ -177,6 +184,11 @@ def _generate_trade_media_for_severe(
                 audit_report_id=audit_report_id,
                 model_used=f"{video_meta.get('provider', 'video')}+ffmpeg-mux",
             )
+
+            if gcs_enabled():
+                video_blob = f"media/trades/{trade_id}/video_{report_date.isoformat()}.mp4"
+                gs_video_url = upload_file_to_gcs(str(output_path), video_blob, content_type="video/mp4")
+                update_media_asset_storage_url(assembly["asset_id"], gs_video_url)
             processed += 1
         except Exception as exc:  # pragma: no cover
             try:
@@ -308,10 +320,18 @@ def _generate_daily_report_media(
             overwrite=True,
         )
 
+        video_url = str(final_path)
+        audio_url = str(audio_path)
+        if gcs_enabled():
+            video_blob = f"media/daily/{report_date.isoformat()}/daily_final.mp4"
+            audio_blob = f"media/daily/{report_date.isoformat()}/daily_audio.wav"
+            video_url = upload_file_to_gcs(str(final_path), video_blob, content_type="video/mp4")
+            audio_url = upload_file_to_gcs(str(audio_path), audio_blob, content_type="audio/wav")
+
         _update_daily_report_media(
             report_date,
-            video_url=str(final_path),
-            audio_url=str(audio_path),
+            video_url=video_url,
+            audio_url=audio_url,
             duration_seconds=assembly.get("duration_seconds"),
             generation_status="ready",
         )
@@ -320,8 +340,8 @@ def _generate_daily_report_media(
             "status": "ok",
             "audio_provider": audio_meta.get("provider"),
             "video_provider": video_meta.get("provider"),
-            "video_url": str(final_path),
-            "audio_url": str(audio_path),
+            "video_url": video_url,
+            "audio_url": audio_url,
             "duration_seconds": assembly.get("duration_seconds"),
         }
     except Exception as exc:

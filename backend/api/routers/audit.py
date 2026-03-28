@@ -2,6 +2,7 @@ from fastapi import APIRouter, HTTPException
 from sqlalchemy import text
 
 from backend.db.connection import get_engine
+from backend.gemini.gcs_storage import resolve_media_url
 
 router = APIRouter(prefix="/api/v1", tags=["audit"])
 
@@ -93,8 +94,15 @@ def get_audit(trade_id: int) -> dict:
         audit = conn.execute(audit_sql, {"trade_id": trade_id}).mappings().first()
         media = conn.execute(media_sql, {"trade_id": trade_id}).mappings().all()
 
+    resolved_media = []
+    for m in media:
+        item = dict(m)
+        if item.get("storage_url"):
+            item["storage_url"] = resolve_media_url(item["storage_url"])
+        resolved_media.append(item)
+
     return {
         "trade": dict(trade),
         "audit_report": dict(audit) if audit else None,
-        "media_assets": [dict(m) for m in media],
+        "media_assets": resolved_media,
     }
