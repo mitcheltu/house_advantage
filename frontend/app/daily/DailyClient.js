@@ -15,6 +15,22 @@ function formatDuration(seconds) {
   return mins > 0 ? `${mins}m ${secs}s` : `${secs}s`;
 }
 
+function safeParseEvidence(value) {
+  if (!value) return null;
+  if (typeof value === 'object') return value;
+  try { return JSON.parse(value); } catch { return null; }
+}
+
+function extractBillLinks(text) {
+  if (!text) return [];
+  const pattern = /\b(H\.?\s*R\.?\s*\d+|S\.?\s*\d+|H\.?\s*Res\.?\s*\d+|S\.?\s*Res\.?\s*\d+|H\.?\s*Con\.?\s*Res\.?\s*\d+|S\.?\s*Con\.?\s*Res\.?\s*\d+)\b/gi;
+  const matches = [...new Set(text.match(pattern) || [])];
+  return matches.map((m) => {
+    const slug = m.replace(/\.\s*/g, '').replace(/\s+/g, '').toLowerCase();
+    return { label: m, url: `https://www.congress.gov/bill/119th-congress/${slug.startsWith('s') ? 'senate' : 'house'}-bill/${slug.replace(/\D/g, '')}` };
+  });
+}
+
 export default function DailyClient({ dailyReport, severeVideos }) {
   const defaultMain = useMemo(() => {
     if (dailyReport?.video_url) {
@@ -33,6 +49,14 @@ export default function DailyClient({ dailyReport, severeVideos }) {
         subtitle: `${firstSevere.full_name || 'Unknown'} · ${firstSevere.ticker || '—'}`,
         videoUrl: firstSevere.video_url,
         tradeId: firstSevere.trade_id,
+        narrative: firstSevere.audit_narrative,
+        evidenceJson: firstSevere.audit_evidence_json,
+        billExcerpt: firstSevere.audit_bill_excerpt,
+        disclaimer: firstSevere.audit_disclaimer,
+        riskLevel: firstSevere.audit_risk_level,
+        bioguideId: firstSevere.bioguide_id,
+        ticker: firstSevere.ticker,
+        fullName: firstSevere.full_name,
       };
     }
     return {
@@ -94,6 +118,70 @@ export default function DailyClient({ dailyReport, severeVideos }) {
           ) : (
             <div className="video-placeholder">No video available yet.</div>
           )}
+
+          {mainVideo.type === 'severe' && (mainVideo.narrative || mainVideo.evidenceJson || mainVideo.billExcerpt) ? (
+            <div className="video-sources">
+              <h4 className="video-sources-title">Sources &amp; Context</h4>
+              {mainVideo.narrative ? (
+                <p className="video-sources-narrative">{mainVideo.narrative}</p>
+              ) : null}
+              {(() => {
+                const evidence = safeParseEvidence(mainVideo.evidenceJson);
+                const factors = Array.isArray(evidence)
+                  ? evidence
+                  : Array.isArray(evidence?.key_factors)
+                    ? evidence.key_factors
+                    : [];
+                if (!factors.length) return null;
+                return (
+                  <div className="video-sources-factors">
+                    <span className="video-sources-label">Key Factors:</span>
+                    {factors.map((f, i) => (
+                      <span key={i} className="source-tag">{typeof f === 'string' ? f : JSON.stringify(f)}</span>
+                    ))}
+                  </div>
+                );
+              })()}
+              {mainVideo.billExcerpt ? (
+                <div className="video-sources-bills">
+                  <span className="video-sources-label">Bill Reference:</span>
+                  {(() => {
+                    const links = extractBillLinks(mainVideo.billExcerpt);
+                    if (links.length) {
+                      return (
+                        <>
+                          <span className="video-sources-text">{mainVideo.billExcerpt}</span>
+                          <div className="video-sources-links">
+                            {links.map((link, i) => (
+                              <a key={i} href={link.url} target="_blank" rel="noopener noreferrer" className="source-link">
+                                {link.label} — Congress.gov ↗
+                              </a>
+                            ))}
+                          </div>
+                        </>
+                      );
+                    }
+                    return <span className="video-sources-text">{mainVideo.billExcerpt}</span>;
+                  })()}
+                </div>
+              ) : null}
+              <div className="video-sources-links">
+                {mainVideo.bioguideId ? (
+                  <a href={`https://www.congress.gov/member/${mainVideo.bioguideId}`} target="_blank" rel="noopener noreferrer" className="source-link">
+                    {mainVideo.fullName || 'Politician'} — Congress.gov Profile ↗
+                  </a>
+                ) : null}
+                {mainVideo.ticker ? (
+                  <a href={`https://www.google.com/finance/quote/${mainVideo.ticker}:NASDAQ`} target="_blank" rel="noopener noreferrer" className="source-link">
+                    {mainVideo.ticker} — Stock Data ↗
+                  </a>
+                ) : null}
+              </div>
+              {mainVideo.disclaimer ? (
+                <p className="video-sources-disclaimer">{mainVideo.disclaimer}</p>
+              ) : null}
+            </div>
+          ) : null}
         </div>
 
         {dailyStats.length ? (
@@ -174,6 +262,14 @@ export default function DailyClient({ dailyReport, severeVideos }) {
                         subtitle: `${item.full_name || 'Unknown'} · ${item.ticker || '—'}`,
                         videoUrl: item.video_url,
                         tradeId: item.trade_id,
+                        narrative: item.audit_narrative,
+                        evidenceJson: item.audit_evidence_json,
+                        billExcerpt: item.audit_bill_excerpt,
+                        disclaimer: item.audit_disclaimer,
+                        riskLevel: item.audit_risk_level,
+                        bioguideId: item.bioguide_id,
+                        ticker: item.ticker,
+                        fullName: item.full_name,
                       })
                     }
                   >

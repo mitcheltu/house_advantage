@@ -34,9 +34,15 @@ export default async function HomePage() {
         const audit = await fetchTradeAudit(item.trade_id).catch(() => null);
         const videoAsset = selectVideoAsset(audit?.media_assets || []);
         const fallbackUrl = buildSevereCaseUrl(item.trade_id);
+        const report = audit?.audit_report || null;
         return {
           ...item,
-          audit_headline: audit?.audit_report?.headline || null,
+          audit_headline: report?.headline || null,
+          audit_narrative: report?.narrative || null,
+          audit_evidence_json: report?.evidence_json || null,
+          audit_bill_excerpt: report?.bill_excerpt || null,
+          audit_disclaimer: report?.disclaimer || null,
+          audit_risk_level: report?.risk_level || null,
           video_url: videoAsset?.storage_url || fallbackUrl,
           video_duration: videoAsset?.duration_seconds || null,
         };
