@@ -77,15 +77,6 @@ export default function DailyClient({ dailyReport, severeVideos }) {
     severePage * severePageSize + severePageSize,
   );
 
-  const dailyStats = dailyReport
-    ? [
-        { label: 'Report Date', value: formatDate(dailyReport.report_date) },
-        { label: 'Status', value: dailyReport.generation_status || 'unknown' },
-        { label: 'Narration', value: dailyReport.narration_script ? 'Ready' : 'Missing' },
-        { label: 'Video', value: dailyReport.video_url ? 'Ready' : 'Missing' },
-      ]
-    : [];
-
   return (
     <section className="daily-layout">
       <div className="daily-main">
@@ -96,22 +87,6 @@ export default function DailyClient({ dailyReport, severeVideos }) {
               <h2>{mainVideo.title}</h2>
               <p className="muted-line">{mainVideo.subtitle}</p>
             </div>
-            {dailyReport?.video_url ? (
-              <button
-                type="button"
-                className="ghost-button"
-                onClick={() =>
-                  setMainVideo({
-                    type: 'daily',
-                    title: 'Daily Summary',
-                    subtitle: formatDate(dailyReport.report_date),
-                    videoUrl: dailyReport.video_url,
-                  })
-                }
-              >
-                Reset to Daily
-              </button>
-            ) : null}
           </div>
           {mainVideo.videoUrl ? (
             <video className="hero-video" controls playsInline src={mainVideo.videoUrl} />
@@ -184,40 +159,12 @@ export default function DailyClient({ dailyReport, severeVideos }) {
           ) : null}
         </div>
 
-        {dailyStats.length ? (
-          <div className="stats-row">
-            {dailyStats.map((stat) => (
-              <div className="stat-chip" key={stat.label}>
-                <span>{stat.label}</span>
-                <strong>{stat.value}</strong>
-              </div>
-            ))}
-          </div>
-        ) : null}
-
         <div className="severe-panel">
           <div className="panel-header">
             <div>
               <h3>Severe Case Focus</h3>
               <p>Click a clip to make it the main player.</p>
             </div>
-            <button
-              type="button"
-              className="ghost-button"
-              onClick={() =>
-                dailyReport?.video_url
-                  ? setMainVideo({
-                      type: 'daily',
-                      title: 'Daily Summary',
-                      subtitle: formatDate(dailyReport.report_date),
-                      videoUrl: dailyReport.video_url,
-                    })
-                  : null
-              }
-              disabled={!dailyReport?.video_url}
-            >
-              Focus Daily Summary
-            </button>
           </div>
           <div className="video-grid">
             {dailyReport ? (
