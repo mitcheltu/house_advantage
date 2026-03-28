@@ -44,3 +44,12 @@ export async function fetchPoliticians(search = '', limit = 25, offset = 0) {
 export async function fetchPoliticianDetail(politicianId, limit = 50) {
   return getJson(`/api/v1/politician/${politicianId}?limit=${limit}`);
 }
+
+export async function fetchTickerPrices(ticker, start, end) {
+  const query = new URLSearchParams();
+  query.set('ticker', ticker);
+  if (start) query.set('start', start);
+  if (end) query.set('end', end);
+  query.set('limit', '500');
+  return getJson(`/api/v1/prices?${query.toString()}`);
+}

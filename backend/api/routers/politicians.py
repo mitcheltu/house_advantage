@@ -97,11 +97,18 @@ def get_politician(politician_id: str, limit: int = Query(default=50, ge=1, le=2
           t.industry_sector,
           a.cohort_index,
           a.baseline_index,
+                    GREATEST(a.cohort_index, a.baseline_index) AS max_index,
           a.severity_quadrant,
           a.audit_triggered,
           ar.id AS audit_report_id,
           ar.headline AS audit_headline,
-          ar.risk_level
+                    ar.risk_level,
+                    ar.narrative,
+                    ar.bill_excerpt,
+                    ar.disclaimer,
+                    ar.video_prompt,
+                    ar.narration_script,
+                    ar.evidence_json
         FROM politicians p
         JOIN trades t ON t.politician_id = p.id
         LEFT JOIN anomaly_scores a ON a.trade_id = t.id

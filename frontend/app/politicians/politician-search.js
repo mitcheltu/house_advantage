@@ -1,7 +1,7 @@
 'use client';
 
-import { useEffect, useMemo, useState } from 'react';
-import { fetchPoliticianDetail, fetchPoliticians } from '@/lib/api';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import { fetchPoliticianDetail, fetchPoliticians, fetchTickerPrices } from '@/lib/api';
 
 function formatDate(value) {
   if (!value) return '—';
@@ -13,6 +13,74 @@ function QuadrantPill({ value }) {
   return <span className={`pill ${String(value).toLowerCase()}`}>{value}</span>;
 }
 
+function addDays(value, days) {
+  const date = new Date(value);
+  date.setDate(date.getDate() + days);
+  return date.toISOString().slice(0, 10);
+}
+
+function isBuyTrade(tradeType) {
+  const normalized = String(tradeType || '').toLowerCase();
+  return normalized.includes('buy') || normalized.includes('purchase');
+}
+
+function Sparkline({ prices, markerDate }) {
+  if (!prices?.length) return <div className="sparkline-empty">No price data</div>;
+
+  const width = 180;
+  const height = 48;
+  const padding = 4;
+  const values = prices.map((p) => p.close);
+  const min = Math.min(...values);
+  const max = Math.max(...values);
+  const range = max - min || 1;
+
+  const points = prices
+    .map((p, idx) => {
+      const x = padding + (idx / (prices.length - 1 || 1)) * (width - padding * 2);
+      const y = padding + ((max - p.close) / range) * (height - padding * 2);
+      return `${x},${y}`;
+    })
+    .join(' ');
+
+  let markerX = null;
+  if (markerDate) {
+    const target = prices.findIndex((p) => p.date === markerDate);
+    const index = target >= 0 ? target : Math.max(0, prices.length - 1);
+    markerX = padding + (index / (prices.length - 1 || 1)) * (width - padding * 2);
+  }
+
+  return (
+    <svg className="sparkline" viewBox={`0 0 ${width} ${height}`} role="img">
+      <polyline points={points} fill="none" stroke="#2563eb" strokeWidth="2" />
+      {markerX !== null ? (
+        <line x1={markerX} y1={padding} x2={markerX} y2={height - padding} stroke="#ef4444" strokeWidth="2" />
+      ) : null}
+    </svg>
+  );
+}
+
+function safeParseEvidence(value) {
+  if (!value) return null;
+  if (typeof value === 'object') return value;
+  try {
+    return JSON.parse(value);
+  } catch (err) {
+    return null;
+  }
+}
+
+function formatScore(value) {
+  if (value === null || value === undefined || Number.isNaN(Number(value))) return '—';
+  return Number(value).toFixed(1);
+}
+
+function scoreWidth(value) {
+  if (value === null || value === undefined || Number.isNaN(Number(value))) return 0;
+  const clamped = Math.max(0, Math.min(100, Number(value)));
+  return clamped;
+}
+
 export default function PoliticianSearch() {
   const [query, setQuery] = useState('');
   const [results, setResults] = useState([]);
@@ -20,6 +88,8 @@ export default function PoliticianSearch() {
   const [detail, setDetail] = useState(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
+  const [priceCache, setPriceCache] = useState({});
+  const inflightRef = useRef(new Set());
 
   const selectedTrade = useMemo(() => detail?.trades || [], [detail]);
 
@@ -52,6 +122,30 @@ export default function PoliticianSearch() {
       setLoading(false);
     }
   }
+
+  useEffect(() => {
+    if (!selectedTrade.length) return;
+
+    selectedTrade.forEach((trade) => {
+      if (!isBuyTrade(trade.trade_type) || !trade.ticker || !trade.trade_date) return;
+      const start = addDays(trade.trade_date, -30);
+      const end = addDays(trade.trade_date, 30);
+      const key = `${trade.ticker}-${start}-${end}`;
+      if (priceCache[key] || inflightRef.current.has(key)) return;
+
+      inflightRef.current.add(key);
+      fetchTickerPrices(trade.ticker, start, end)
+        .then((data) => {
+          setPriceCache((prev) => ({ ...prev, [key]: data.prices || [] }));
+        })
+        .catch(() => {
+          setPriceCache((prev) => ({ ...prev, [key]: [] }));
+        })
+        .finally(() => {
+          inflightRef.current.delete(key);
+        });
+    });
+  }, [selectedTrade, priceCache]);
 
   return (
     <section className="politician-layout">
@@ -143,8 +237,10 @@ export default function PoliticianSearch() {
                     <th>Ticker</th>
                     <th>Type</th>
                     <th>Amount</th>
+                    <th>Market</th>
+                    <th>Score</th>
                     <th>Quadrant</th>
-                    <th>Audit</th>
+                    <th>Contextualizer</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -155,13 +251,60 @@ export default function PoliticianSearch() {
                       <td>{trade.trade_type || '—'}</td>
                       <td>{trade.amount_midpoint || '—'}</td>
                       <td>
+                        {isBuyTrade(trade.trade_type) && trade.ticker && trade.trade_date ? (
+                          (() => {
+                            const start = addDays(trade.trade_date, -30);
+                            const end = addDays(trade.trade_date, 30);
+                            const key = `${trade.ticker}-${start}-${end}`;
+                            return (
+                              <Sparkline prices={priceCache[key]} markerDate={trade.trade_date} />
+                            );
+                          })()
+                        ) : (
+                          '—'
+                        )}
+                      </td>
+                      <td>
+                        <div className="score-cell">
+                          <div className="score-value">{formatScore(trade.max_index)}</div>
+                          <div className="score-track">
+                            <div className="score-fill" style={{ width: `${scoreWidth(trade.max_index)}%` }} />
+                          </div>
+                          <div className="score-meta">
+                            Cohort {formatScore(trade.cohort_index)} · Baseline {formatScore(trade.baseline_index)}
+                          </div>
+                        </div>
+                      </td>
+                      <td>
                         <QuadrantPill value={trade.severity_quadrant || 'UNREMARKABLE'} />
                       </td>
                       <td>
                         {trade.audit_report_id ? (
-                          <div>
+                          <div className="context-block">
                             <div className="audit-title">{trade.audit_headline || 'Audit Report'}</div>
                             <div className="audit-subtitle">Risk: {trade.risk_level || '—'}</div>
+                            {trade.narrative ? (
+                              <p className="context-body">{trade.narrative}</p>
+                            ) : null}
+                            {trade.bill_excerpt ? (
+                              <p className="context-caption">Bill excerpt: {trade.bill_excerpt}</p>
+                            ) : null}
+                            {trade.disclaimer ? (
+                              <p className="context-caption">{trade.disclaimer}</p>
+                            ) : null}
+                            {(() => {
+                              const evidence = safeParseEvidence(trade.evidence_json);
+                              if (!evidence) return null;
+                              const keys = Array.isArray(evidence)
+                                ? evidence.slice(0, 3)
+                                : Object.keys(evidence).slice(0, 3);
+                              if (!keys.length) return null;
+                              return (
+                                <div className="context-evidence">
+                                  Evidence: {keys.join(', ')}
+                                </div>
+                              );
+                            })()}
                           </div>
                         ) : (
                           '—'

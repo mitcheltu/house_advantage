@@ -374,6 +374,74 @@ body {
   font-size: 0.8rem;
 }
 
+.score-cell {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 160px;
+}
+
+.score-value {
+  font-weight: 700;
+  font-size: 0.95rem;
+}
+
+.score-track {
+  height: 8px;
+  border-radius: 999px;
+  background: #f2f4f7;
+  overflow: hidden;
+}
+
+.score-fill {
+  height: 100%;
+  border-radius: 999px;
+  background: linear-gradient(90deg, #b42318 0%, #f79009 45%, #12b76a 100%);
+}
+
+.score-meta {
+  font-size: 0.75rem;
+  color: #667085;
+}
+
+.context-block {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-width: 420px;
+}
+
+.context-body {
+  margin: 0;
+  color: #344054;
+  font-size: 0.88rem;
+  line-height: 1.45;
+}
+
+.context-caption {
+  margin: 0;
+  color: #667085;
+  font-size: 0.78rem;
+  line-height: 1.4;
+}
+
+.context-evidence {
+  color: #475467;
+  font-size: 0.78rem;
+  font-weight: 600;
+}
+
+.sparkline {
+  width: 180px;
+  height: 48px;
+  display: block;
+}
+
+.sparkline-empty {
+  font-size: 0.75rem;
+  color: #98a2b3;
+}
+
 @media (max-width: 960px) {
   .daily-layout {
     grid-template-columns: 1fr;
