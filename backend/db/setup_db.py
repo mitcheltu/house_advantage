@@ -426,8 +426,32 @@ def load_politician_votes(engine, bioguide_map: dict, vote_map: dict):
     log.info(f"  Loaded {count} politician vote positions")
 
 
+def _log_bills_quality(engine, total_count: int):
+    """Log quality metrics for the bills table after loading."""
+    try:
+        with engine.connect() as conn:
+            metrics = conn.execute(text(
+                "SELECT "
+                "  SUM(policy_area IS NOT NULL AND policy_area != '') as has_policy, "
+                "  SUM(latest_action_date IS NOT NULL) as has_action_date, "
+                "  SUM(origin_chamber IS NOT NULL) as has_chamber, "
+                "  SUM(sponsor_bioguide IS NOT NULL AND sponsor_bioguide != '') as has_sponsor, "
+                "  SUM(url IS NOT NULL AND url != '') as has_url "
+                "FROM bills"
+            )).fetchone()
+            log.info(f"  Bills quality metrics ({total_count} total):")
+            labels = ["policy_area", "latest_action_date", "origin_chamber",
+                      "sponsor_bioguide", "url"]
+            for i, label in enumerate(labels):
+                val = metrics[i] or 0
+                pct = val / total_count * 100 if total_count else 0
+                log.info(f"    {label:25s}: {val:>5}/{total_count} ({pct:.1f}%)")
+    except Exception as e:
+        log.warning(f"  Could not compute bills quality metrics: {e}")
+
+
 def load_bills(engine):
-    """Load bills data."""
+    """Load bills data and log quality metrics."""
     csv_path = DATA_RAW / "bills_raw.csv"
     if not csv_path.exists():
         log.debug("bills_raw.csv not found — skipping")
@@ -460,6 +484,10 @@ def load_bills(engine):
     _truncate(engine, "bills")
     count = _insert_df(df, "bills", engine)
     log.info(f"  Loaded {count} bills")
+
+    # Quality metrics
+    if count > 0:
+        _log_bills_quality(engine, count)
 
 
 def load_fec(engine):

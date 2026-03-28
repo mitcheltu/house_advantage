@@ -7,6 +7,7 @@ Auth: ?api_key= query param
 Key: https://api.data.gov/signup (same registration as OpenFEC)
 """
 import logging
+import re
 import time
 import pandas as pd
 from pathlib import Path
@@ -44,19 +45,18 @@ def collect_bills_text(
         start_date: ISO datetime for lastModifiedStartDate (required by API)
     """
     collection = "BILLS"
-    offset = 0
     page_size = 100
     records = []
+    offset_mark = "*"  # GovInfo requires offsetMark; '*' = start
 
     log.info(f"Collecting {bill_type} bills from {congress}th Congress via GovInfo...")
 
-    while offset < max_bills:
+    while len(records) < max_bills:
         data = _govinfo_get(
             f"/collections/{collection}/{start_date}",
             params={
-                "offset": offset,
-                "pageSize": min(page_size, max_bills - offset),
-                "congress": congress,
+                "offsetMark": offset_mark,
+                "pageSize": min(page_size, max_bills - len(records)),
             },
         )
 
@@ -67,12 +67,16 @@ def collect_bills_text(
         for pkg in packages:
             pkg_id = pkg.get("packageId", "")
 
-            # Filter to requested bill type
+            # Filter to requested bill type and congress
             if bill_type.upper() not in pkg_id.upper():
                 continue
+            if f"-{congress}" not in pkg_id:
+                continue
 
+            bill_id = _package_id_to_bill_id(pkg_id)
             records.append({
                 "package_id": pkg_id,
+                "bill_id": bill_id,
                 "title": pkg.get("title"),
                 "congress": congress,
                 "bill_type": bill_type,
@@ -83,14 +87,26 @@ def collect_bills_text(
                 "download_url": pkg.get("packageLink"),
             })
 
-        offset += page_size
-        log.info(f"  GovInfo offset {offset}: {len(packages)} packages")
+        # Use nextPage cursor for pagination
+        next_page = data.get("nextPage")
+        if not next_page:
+            break
+        # Extract offsetMark from nextPage URL
+        from urllib.parse import urlparse, parse_qs
+        qs = parse_qs(urlparse(next_page).query)
+        offset_mark = qs.get("offsetMark", [None])[0]
+        if not offset_mark:
+            break
+        log.info(f"  GovInfo: {len(records)} {bill_type} packages so far")
 
     df = pd.DataFrame(records)
     out_path = DATA_RAW / f"govinfo_bills_{bill_type}_{congress}_raw.csv"
     df.to_csv(out_path, index=False)
     log.info(f"Saved {len(df)} bill records to {out_path}")
     return df
+
+
+_FORMAT_KEY_MAP = {"htm": "txtLink", "xml": "xmlLink", "pdf": "pdfLink", "txt": "txtLink"}
 
 
 def download_bill_text(package_id: str, format: str = "htm") -> str | None:
@@ -103,10 +119,12 @@ def download_bill_text(package_id: str, format: str = "htm") -> str | None:
     try:
         data = _govinfo_get(f"/packages/{package_id}/summary")
         download_links = data.get("download", {})
-        text_url = download_links.get(f"{format}Url")
+        # GovInfo uses keys like 'txtLink', 'xmlLink', 'pdfLink'
+        key = _FORMAT_KEY_MAP.get(format, f"{format}Link")
+        text_url = download_links.get(key)
 
         if not text_url:
-            log.warning(f"No {format} download for {package_id}")
+            log.warning(f"No {format} download (key={key}) for {package_id}")
             return None
 
         api_key = get_env("GOVINFO_API_KEY")
@@ -132,19 +150,18 @@ def collect_committee_reports(
     Fetch committee reports from GovInfo CRPT collection.
     Saves: data/raw/govinfo_committee_reports_raw.csv
     """
-    offset = 0
     page_size = 100
     records = []
+    offset_mark = "*"
 
     log.info(f"Collecting committee reports from {congress}th Congress...")
 
-    while offset < max_reports:
+    while len(records) < max_reports:
         data = _govinfo_get(
             f"/collections/CRPT/{start_date}",
             params={
-                "offset": offset,
-                "pageSize": min(page_size, max_reports - offset),
-                "congress": congress,
+                "offsetMark": offset_mark,
+                "pageSize": min(page_size, max_reports - len(records)),
             },
         )
 
@@ -153,8 +170,12 @@ def collect_committee_reports(
             break
 
         for pkg in packages:
+            pkg_id = pkg.get("packageId", "")
+            # Filter to requested congress
+            if f"-{congress}" not in pkg_id:
+                continue
             records.append({
-                "package_id": pkg.get("packageId"),
+                "package_id": pkg_id,
                 "title": pkg.get("title"),
                 "congress": congress,
                 "last_modified": pkg.get("lastModified"),
@@ -162,7 +183,14 @@ def collect_committee_reports(
                 "doc_class": pkg.get("docClass"),
             })
 
-        offset += page_size
+        next_page = data.get("nextPage")
+        if not next_page:
+            break
+        from urllib.parse import urlparse, parse_qs
+        qs = parse_qs(urlparse(next_page).query)
+        offset_mark = qs.get("offsetMark", [None])[0]
+        if not offset_mark:
+            break
 
     df = pd.DataFrame(records)
     out_path = DATA_RAW / "govinfo_committee_reports_raw.csv"
@@ -171,13 +199,98 @@ def collect_committee_reports(
     return df
 
 
+def _package_id_to_bill_id(package_id: str) -> str | None:
+    """Convert GovInfo packageId to Congress.gov bill_id format.
+
+    Examples:
+        'BILLS-119hr7147eas' -> 'hr7147-119'
+        'BILLS-119s100is'    -> 's100-119'
+        'BILLS-119hjres1ih'  -> 'hjres1-119'
+    """
+    m = re.match(r"BILLS-(\d+)([a-z]+?)(\d+)([a-z]+)$", package_id, re.IGNORECASE)
+    if not m:
+        return None
+    congress, bill_type, bill_number, _version = m.groups()
+    return f"{bill_type.lower()}{bill_number}-{congress}"
+
+
+def merge_govinfo_to_bills(congress: int = 119) -> pd.DataFrame | None:
+    """Merge GovInfo metadata into the Congress.gov bills_raw.csv.
+
+    Links bills by matching bill_id (e.g. 'hr1-119') derived from the
+    GovInfo packageId.  Adds columns: govinfo_package_id, govinfo_url,
+    date_issued.
+
+    Returns the merged DataFrame, or None if bills_raw.csv doesn't exist.
+    """
+    bills_path = DATA_RAW / "bills_raw.csv"
+    if not bills_path.exists():
+        log.warning("bills_raw.csv not found — skipping GovInfo merge")
+        return None
+
+    bills_df = pd.read_csv(bills_path)
+    if "id" not in bills_df.columns:
+        log.warning("bills_raw.csv missing 'id' column — skipping merge")
+        return None
+
+    # Drop any existing GovInfo columns from a prior merge (idempotent)
+    for col in ["govinfo_package_id", "govinfo_url", "date_issued", "bill_id"]:
+        if col in bills_df.columns:
+            bills_df.drop(columns=[col], inplace=True)
+
+    # Collect GovInfo CSVs for all bill types
+    govinfo_frames = []
+    for bt in ["hr", "s", "hjres", "sjres"]:
+        gp = DATA_RAW / f"govinfo_bills_{bt}_{congress}_raw.csv"
+        if gp.exists():
+            govinfo_frames.append(pd.read_csv(gp))
+
+    if not govinfo_frames:
+        log.info("No GovInfo bill CSVs found — nothing to merge")
+        return bills_df
+
+    gov_df = pd.concat(govinfo_frames, ignore_index=True)
+
+    if "bill_id" not in gov_df.columns:
+        # Older CSVs may not have bill_id — derive it
+        gov_df["bill_id"] = gov_df["package_id"].apply(_package_id_to_bill_id)
+
+    # Keep only the latest version per bill (highest lastModified)
+    gov_df = gov_df.sort_values("last_modified", ascending=False)
+    gov_df = gov_df.drop_duplicates(subset="bill_id", keep="first")
+
+    # Rename for merge
+    merge_cols = gov_df[["bill_id", "package_id", "download_url", "date_issued"]].copy()
+    merge_cols = merge_cols.rename(columns={
+        "package_id": "govinfo_package_id",
+        "download_url": "govinfo_url",
+    })
+
+    before = len(bills_df)
+    bills_df = bills_df.merge(merge_cols, left_on="id", right_on="bill_id",
+                              how="left")
+    # Drop redundant bill_id column from merge
+    bills_df.drop(columns=["bill_id"], errors="ignore", inplace=True)
+
+    matched = bills_df["govinfo_package_id"].notna().sum()
+    log.info(f"GovInfo merge: {matched}/{before} bills matched ({matched/before*100:.1f}%)")
+
+    bills_df.to_csv(bills_path, index=False)
+    log.info(f"Updated {bills_path} with GovInfo columns")
+    return bills_df
+
+
 def collect_all(congress: int = 119):
-    """Run full GovInfo collection."""
+    """Run full GovInfo collection and merge into bills_raw.csv."""
     dfs = []
     for bill_type in ["hr", "s"]:
         df = collect_bills_text(congress=congress, bill_type=bill_type)
         dfs.append(df)
     collect_committee_reports(congress=congress)
+
+    # Merge GovInfo data into Congress.gov bills
+    merge_govinfo_to_bills(congress=congress)
+
     return pd.concat(dfs, ignore_index=True) if dfs else pd.DataFrame()
 
 

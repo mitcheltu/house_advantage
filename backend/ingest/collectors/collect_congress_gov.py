@@ -325,10 +325,16 @@ def collect_bills(congress: int = CURRENT_CONGRESS,
 
     If fetch_policy_areas=True, fetches bill detail for each bill to capture
     policyArea (needed for vote sector mapping). This is slower (~1.5s/bill).
+
+    Returns (DataFrame, list_of_failed_bill_ids) so enrichment knows what to retry.
     """
     log.info(f"Collecting bills for {congress}th Congress...")
 
     records = []
+    failed_ids = []
+    total_detail_attempts = 0
+    total_detail_success = 0
+
     for bill_type in ["hr", "s", "hjres", "sjres"]:
         log.info(f"  Fetching {bill_type} bills...")
         bills = _paginate(
@@ -337,7 +343,7 @@ def collect_bills(congress: int = CURRENT_CONGRESS,
             result_key="bills",
         )
 
-        for b in bills:
+        for i, b in enumerate(bills):
             bill_number = b.get("number", "")
             policy_area = None
             latest_action = None
@@ -347,14 +353,25 @@ def collect_bills(congress: int = CURRENT_CONGRESS,
             legislation_url = None
             introduced_date = b.get("introducedDate", "")
 
+            # Extract free fields from list endpoint (no extra API call)
+            list_action = b.get("latestAction") or {}
+            list_latest_action = list_action.get("text")
+            list_latest_action_date = list_action.get("actionDate")
+            list_origin_chamber = b.get("originChamber")
+            list_url = b.get("url")  # API detail URL from list
+
             # Fetch bill detail for all enrichment fields
             if fetch_policy_areas and bill_number:
+                total_detail_attempts += 1
+                bill_id = f"{bill_type}{bill_number}-{congress}"
                 try:
+                    if (i + 1) % 50 == 0 or i == 0:
+                        log.info(f"    Detail fetch {i + 1}/{len(bills)} for {bill_type} bills...")
                     detail_resp = rate_limited_get(
                         f"{BASE_URL}/bill/{congress}/{bill_type}/{bill_number}",
                         params=_params(),
                         delay=1.5,
-                        max_retries=3,
+                        max_retries=5,
                     )
                     bill_detail = detail_resp.json().get("bill", {})
                     policy_area = bill_detail.get("policyArea", {}).get("name")
@@ -368,8 +385,18 @@ def collect_bills(congress: int = CURRENT_CONGRESS,
                     legislation_url = bill_detail.get("legislationUrl")
                     if not introduced_date:
                         introduced_date = bill_detail.get("introducedDate", "")
+                    total_detail_success += 1
                 except Exception as e:
-                    log.debug(f"    Could not fetch detail for {bill_type}{bill_number}: {e}")
+                    log.warning(f"    Detail fetch FAILED for {bill_id}: {e}")
+                    failed_ids.append(bill_id)
+
+            # Fall back to list endpoint data for fields still missing
+            if not latest_action and list_latest_action:
+                latest_action = list_latest_action
+            if not latest_action_date and list_latest_action_date:
+                latest_action_date = list_latest_action_date
+            if not origin_chamber and list_origin_chamber:
+                origin_chamber = list_origin_chamber
 
             records.append({
                 "id": f"{bill_type}{bill_number}-{congress}",
@@ -391,14 +418,25 @@ def collect_bills(congress: int = CURRENT_CONGRESS,
     df.to_csv(out_path, index=False)
     log.info(f"Saved {len(df)} bills to {out_path}")
     policy_count = df["policy_area"].notna().sum()
-    log.info(f"  {policy_count}/{len(df)} bills have policyArea tags")
+    url_count = df["url"].notna().sum()
+    action_date_count = df["latest_action_date"].notna().sum()
+    log.info(f"  policy_area:       {policy_count}/{len(df)} ({policy_count/len(df)*100:.1f}%)")
+    log.info(f"  latest_action_date:{action_date_count}/{len(df)} ({action_date_count/len(df)*100:.1f}%)")
+    log.info(f"  url:               {url_count}/{len(df)} ({url_count/len(df)*100:.1f}%)")
+    if fetch_policy_areas:
+        log.info(f"  Detail fetches:    {total_detail_success}/{total_detail_attempts} succeeded")
+    if failed_ids:
+        log.warning(f"  {len(failed_ids)} bills failed detail fetch — "
+                     "run enrich_bills_policy_area() to retry")
     return df
 
 
 def enrich_bills_policy_area(congress: int = CURRENT_CONGRESS) -> pd.DataFrame:
     """
-    Backfill policyArea on existing bills_raw.csv by fetching bill detail
-    only for rows missing policy_area. Much faster than re-collecting all bills.
+    Backfill policyArea and other missing fields on existing bills_raw.csv
+    by fetching bill detail only for rows missing policy_area.
+    Also fills: latest_action, latest_action_date, origin_chamber,
+    sponsor_bioguide, and url (legislationUrl).
     """
     csv_path = DATA_RAW / "bills_raw.csv"
     if not csv_path.exists():
@@ -406,11 +444,19 @@ def enrich_bills_policy_area(congress: int = CURRENT_CONGRESS) -> pd.DataFrame:
         return pd.DataFrame()
 
     df = pd.read_csv(csv_path)
+    # Ensure string columns aren't inferred as float when all-NaN
+    for col in ["policy_area", "related_sector", "latest_action",
+                "latest_action_date", "origin_chamber", "sponsor_bioguide", "url"]:
+        if col in df.columns:
+            df[col] = df[col].astype(object)
     missing = df["policy_area"].isna() if "policy_area" in df.columns else pd.Series([True] * len(df))
     to_fetch = df[missing]
     log.info(f"Enriching {len(to_fetch)}/{len(df)} bills missing policyArea...")
 
     enriched = 0
+    failed = 0
+    processed = 0
+    save_every = 200
     for idx, row in to_fetch.iterrows():
         bill_id = str(row.get("id", ""))
         # Parse bill_type and number from id like "hr123-119"
@@ -427,8 +473,8 @@ def enrich_bills_policy_area(congress: int = CURRENT_CONGRESS) -> pd.DataFrame:
             detail_resp = rate_limited_get(
                 f"{BASE_URL}/bill/{congress}/{bill_type}/{bill_number}",
                 params=_params(),
-                delay=1.5,
-                max_retries=3,
+                delay=0.75,
+                max_retries=5,
             )
             bill_detail = detail_resp.json().get("bill", {})
             pa = bill_detail.get("policyArea", {}).get("name")
@@ -436,11 +482,40 @@ def enrich_bills_policy_area(congress: int = CURRENT_CONGRESS) -> pd.DataFrame:
                 df.at[idx, "policy_area"] = pa
                 df.at[idx, "related_sector"] = _policy_area_to_sector(pa)
                 enriched += 1
+
+            # Also backfill other missing fields from the detail response
+            la_obj = bill_detail.get("latestAction", {})
+            if la_obj.get("text") and pd.isna(row.get("latest_action")):
+                df.at[idx, "latest_action"] = la_obj["text"]
+            if la_obj.get("actionDate") and pd.isna(row.get("latest_action_date")):
+                df.at[idx, "latest_action_date"] = la_obj["actionDate"]
+            if bill_detail.get("originChamber") and pd.isna(row.get("origin_chamber")):
+                df.at[idx, "origin_chamber"] = bill_detail["originChamber"]
+            sponsors = bill_detail.get("sponsors", [])
+            if sponsors and pd.isna(row.get("sponsor_bioguide")):
+                df.at[idx, "sponsor_bioguide"] = sponsors[0].get("bioguideId")
+            legislation_url = bill_detail.get("legislationUrl")
+            if legislation_url and pd.isna(row.get("url")):
+                df.at[idx, "url"] = legislation_url
+
         except Exception as e:
-            log.debug(f"  Could not fetch detail for {bill_type}{bill_number}: {e}")
+            failed += 1
+            log.warning(f"  Enrich failed for {bill_id}: {e}")
+
+        processed += 1
+        if processed % 50 == 0:
+            log.info(f"  Progress: {processed}/{len(to_fetch)} "
+                     f"(enriched={enriched}, failed={failed})")
+        if processed % save_every == 0:
+            df.to_csv(csv_path, index=False)
+            log.info(f"  Checkpoint saved at {processed}/{len(to_fetch)}")
 
     df.to_csv(csv_path, index=False)
-    log.info(f"Enriched {enriched} bills with policyArea")
+    policy_count = df["policy_area"].notna().sum()
+    url_count = df["url"].notna().sum()
+    log.info(f"Enriched {enriched} bills with policyArea ({failed} failures)")
+    log.info(f"  policy_area: {policy_count}/{len(df)} ({policy_count/len(df)*100:.1f}%)")
+    log.info(f"  url:         {url_count}/{len(df)} ({url_count/len(df)*100:.1f}%)")
     return df
 
 
@@ -481,6 +556,7 @@ def enrich_votes_with_sectors() -> pd.DataFrame:
 def collect_all():
     """
     Run Congress.gov collectors: politicians, committees, bills.
+    Includes automatic enrichment pass for bills missing policy_area.
 
     Committee memberships and votes are handled by separate steps:
       - Step 2: Committee memberships from unitedstates/congress-legislators
@@ -494,10 +570,23 @@ def collect_all():
     committees = collect_committees()
     bills = collect_bills()
 
+    # Auto-enrichment pass: retry detail fetch for bills still missing policy_area
+    policy_count = bills["policy_area"].notna().sum()
+    missing_count = len(bills) - policy_count
+    if missing_count > 0:
+        log.info(f"Running enrichment pass for {missing_count} bills missing policy_area...")
+        bills = enrich_bills_policy_area()
+        # Propagate bill sectors to votes if votes exist
+        enrich_votes_with_sectors()
+
     log.info("=" * 60)
     log.info("Congress.gov collection complete!")
     log.info(f"  Politicians:  {len(politicians)}")
     log.info(f"  Committees:   {len(committees)}")
+    log.info(f"  Bills:        {len(bills)}")
+    policy_final = bills["policy_area"].notna().sum() if len(bills) else 0
+    log.info(f"  Bills w/ policy_area: {policy_final}/{len(bills)}")
+    log.info("=" * 60)
     log.info(f"  Bills:        {len(bills)}")
     log.info("=" * 60)
 
