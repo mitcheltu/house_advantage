@@ -266,13 +266,8 @@ def _synthesize_with_gemini_tts(script_text: str, output: Path) -> tuple[dict[st
                 },
             },
         },
-        {
-            "contents": [{"parts": [{"text": script_text}]}],
-            "generationConfig": {
-                "responseMimeType": "audio/wav",
-                "responseModalities": ["AUDIO"],
-            },
-        },
+        # NOTE: Avoid audioConfig; Gemini rejects unknown fields in generationConfig.
+        # NOTE: Do not set responseMimeType for AUDIO; Gemini rejects it.
     ]
 
     last_error = None
@@ -285,6 +280,13 @@ def _synthesize_with_gemini_tts(script_text: str, output: Path) -> tuple[dict[st
                 json=payload,
                 timeout=180,
             )
+            if resp.status_code >= 400:
+                try:
+                    error_payload = resp.json()
+                except Exception:
+                    error_payload = resp.text
+                last_error = f"{resp.status_code} {resp.reason}: {error_payload}"
+                continue
             resp.raise_for_status()
             data = _json_response(resp)
 
@@ -308,6 +310,27 @@ def _synthesize_with_gemini_tts(script_text: str, output: Path) -> tuple[dict[st
                     "candidates.0.content.parts.0.inlineData.data,candidates.0.content.parts.0.inline_data.data,audio.data",
                 ),
             )
+
+            if not audio_b64:
+                candidates = data.get("candidates") if isinstance(data.get("candidates"), list) else []
+                for candidate in candidates:
+                    parts = candidate.get("content", {}).get("parts", []) if isinstance(candidate, dict) else []
+                    if not isinstance(parts, list):
+                        continue
+                    for part_entry in parts:
+                        if not isinstance(part_entry, dict):
+                            continue
+                        inline = part_entry.get("inlineData") or part_entry.get("inline_data")
+                        if not isinstance(inline, dict):
+                            continue
+                        candidate_b64 = inline.get("data")
+                        if candidate_b64:
+                            audio_b64 = candidate_b64
+                            if not mime_type:
+                                mime_type = str(inline.get("mimeType") or inline.get("mime_type") or "").strip().lower()
+                            break
+                    if audio_b64:
+                        break
             if not audio_b64:
                 last_error = f"Gemini TTS response did not contain audio data keys={list(data.keys())}"
                 continue
@@ -369,6 +392,8 @@ def synthesize_narration_audio(script_text: str, output_path: str) -> dict[str, 
         gemini_result, gemini_error = _synthesize_with_gemini_tts(script_text=script_text, output=output)
         if gemini_result is not None:
             return gemini_result
+        if gemini_error:
+            print(f"[tts-debug] Gemini TTS failed: {gemini_error}")
         if provider_mode == "gemini" and gemini_error:
             fallback = _generate_silent_wav(output, _estimate_duration_seconds(script_text))
             fallback["error"] = gemini_error

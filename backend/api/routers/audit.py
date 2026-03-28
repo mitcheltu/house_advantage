@@ -95,6 +95,16 @@ def get_audit(trade_id: int) -> dict:
         audit = conn.execute(audit_sql, {"trade_id": trade_id}).mappings().first()
         media = conn.execute(media_sql, {"trade_id": trade_id}).mappings().all()
 
+    trade_dict = dict(trade)
+    trade_dict["sectors"] = _parse_sector(trade.get("industry_sector"))
+
+    resolved_media = []
+    for item in media:
+        entry = dict(item)
+        if entry.get("storage_url"):
+            entry["storage_url"] = resolve_media_url(entry["storage_url"])
+        resolved_media.append(entry)
+
     return {
         "trade": trade_dict,
         "audit_report": dict(audit) if audit else None,

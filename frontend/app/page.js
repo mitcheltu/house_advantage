@@ -1,38 +1,41 @@
-import {
-  fetchLatestDailyReport,
-  fetchLeaderboard,
-  fetchSystemic,
-  fetchTradeAudit,
-} from '@/lib/api';
+import { fetchLatestDailyReport, fetchSevereLeaderboard, fetchTradeAudit } from '@/lib/api';
+import DailyClient from './daily/DailyClient';
 
-function StatCard({ label, value, subtext }) {
+function selectVideoAsset(mediaAssets) {
+  if (!Array.isArray(mediaAssets)) return null;
   return (
-    <div className="card">
-      <div className="card-label">{label}</div>
-      <div className="card-value">{value}</div>
-      {subtext ? <div className="card-subtext">{subtext}</div> : null}
-    </div>
+    mediaAssets.find((asset) => String(asset.asset_type || '').toLowerCase().includes('video') && asset.storage_url) ||
+    mediaAssets.find((asset) => asset.storage_url && String(asset.storage_url).includes('.mp4')) ||
+    null
   );
 }
 
 export default async function HomePage() {
-  let systemic = null;
-  let leaderboard = null;
   let dailyReport = null;
-  let auditPreview = null;
+  let severeVideos = [];
   let error = null;
 
   try {
-    [systemic, leaderboard, dailyReport] = await Promise.all([
-      fetchSystemic(),
-      fetchLeaderboard(),
+    const [dailyReportData, severeData] = await Promise.all([
       fetchLatestDailyReport().catch(() => null),
+      fetchSevereLeaderboard(12).catch(() => null),
     ]);
 
-    const topTradeId = leaderboard?.items?.[0]?.trade_id;
-    if (topTradeId) {
-      auditPreview = await fetchTradeAudit(topTradeId).catch(() => null);
-    }
+    dailyReport = dailyReportData;
+    const severeItems = severeData?.items || [];
+
+    severeVideos = await Promise.all(
+      severeItems.map(async (item) => {
+        const audit = await fetchTradeAudit(item.trade_id).catch(() => null);
+        const videoAsset = selectVideoAsset(audit?.media_assets || []);
+        return {
+          ...item,
+          audit_headline: audit?.audit_report?.headline || null,
+          video_url: videoAsset?.storage_url || null,
+          video_duration: videoAsset?.duration_seconds || null,
+        };
+      })
+    );
   } catch (err) {
     error = err instanceof Error ? err.message : 'Unknown error';
   }
@@ -40,104 +43,13 @@ export default async function HomePage() {
   return (
     <main className="container">
       <header className="header">
-        <h1>House Advantage</h1>
-        <p>Daily anomaly intelligence for congressional stock trades.</p>
+        <h1>Daily Summary</h1>
+        <p>Watch the daily narrative and review severe case videos.</p>
       </header>
 
-      {error ? (
-        <section className="error">Backend unavailable: {error}</section>
-      ) : null}
+      {error ? <section className="error">Backend unavailable: {error}</section> : null}
 
-      {systemic ? (
-        <section>
-          <h2>Systemic Snapshot</h2>
-          <div className="stats-grid">
-            <StatCard label="Total Scored" value={systemic.total_scored} />
-            <StatCard
-              label="SEVERE"
-              value={systemic.quadrants.SEVERE.count}
-              subtext={`${systemic.quadrants.SEVERE.pct}%`}
-            />
-            <StatCard
-              label="SYSTEMIC"
-              value={systemic.quadrants.SYSTEMIC.count}
-              subtext={`${systemic.quadrants.SYSTEMIC.pct}%`}
-            />
-            <StatCard
-              label="Audit Triggered"
-              value={systemic.audit_triggered.count}
-              subtext={`${systemic.audit_triggered.pct}%`}
-            />
-          </div>
-        </section>
-      ) : null}
-
-      {dailyReport ? (
-        <section>
-          <h2>Daily GenMedia Snapshot</h2>
-          <div className="stats-grid">
-            <StatCard label="Report Date" value={String(dailyReport.report_date).slice(0, 10)} />
-            <StatCard label="Generation Status" value={dailyReport.generation_status || 'unknown'} />
-            <StatCard label="Has Veo Prompt" value={dailyReport.veo_prompt ? 'Yes' : 'No'} />
-            <StatCard label="Has Narration" value={dailyReport.narration_script ? 'Yes' : 'No'} />
-          </div>
-          {dailyReport.video_url ? (
-            <p className="muted-line">Video URL: {dailyReport.video_url}</p>
-          ) : null}
-        </section>
-      ) : null}
-
-      {auditPreview?.audit_report ? (
-        <section>
-          <h2>Auditor Preview (Top Flagged Trade)</h2>
-          <div className="card">
-            <div className="card-label">{auditPreview.audit_report.headline}</div>
-            <div className="card-subtext">
-              Risk: {auditPreview.audit_report.risk_level} · Quadrant: {auditPreview.audit_report.severity_quadrant}
-            </div>
-            <p>{auditPreview.audit_report.narrative}</p>
-            <div className="card-subtext">
-              Media assets: {(auditPreview.media_assets || []).length}
-            </div>
-          </div>
-        </section>
-      ) : null}
-
-      <section>
-        <h2>Leaderboard</h2>
-        <div className="table-wrap">
-          <table>
-            <thead>
-              <tr>
-                <th>Date</th>
-                <th>Politician</th>
-                <th>Ticker</th>
-                <th>Type</th>
-                <th>Cohort</th>
-                <th>Baseline</th>
-                <th>Quadrant</th>
-              </tr>
-            </thead>
-            <tbody>
-              {(leaderboard?.items || []).map((row) => (
-                <tr key={row.trade_id}>
-                  <td>{String(row.trade_date).slice(0, 10)}</td>
-                  <td>{row.full_name || 'Unknown'}</td>
-                  <td>{row.ticker}</td>
-                  <td>{row.trade_type}</td>
-                  <td>{row.cohort_index}</td>
-                  <td>{row.baseline_index}</td>
-                  <td>
-                    <span className={`pill ${String(row.severity_quadrant).toLowerCase()}`}>
-                      {row.severity_quadrant}
-                    </span>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      </section>
+      <DailyClient dailyReport={dailyReport} severeVideos={severeVideos} />
     </main>
   );
 }

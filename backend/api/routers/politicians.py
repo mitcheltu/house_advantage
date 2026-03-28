@@ -7,6 +7,64 @@ from backend.scoring.dual_scorer import _parse_sector
 router = APIRouter(prefix="/api/v1", tags=["politicians"])
 
 
+@router.get("/politicians")
+def list_politicians(
+    search: str | None = Query(default=None),
+    limit: int = Query(default=25, ge=1, le=200),
+    offset: int = Query(default=0, ge=0),
+) -> dict:
+    engine = get_engine()
+
+    where = ""
+    params: dict[str, object] = {"limit": limit, "offset": offset}
+    if search:
+        where = "WHERE LOWER(p.full_name) LIKE :q OR LOWER(p.bioguide_id) LIKE :q OR LOWER(p.state) LIKE :q"
+        params["q"] = f"%{search.lower()}%"
+
+    sql = text(
+        f"""
+        SELECT
+          p.id,
+          p.bioguide_id,
+          p.full_name,
+          p.party,
+          p.state,
+          p.chamber,
+          p.district,
+          p.start_date,
+          p.end_date,
+          p.url
+        FROM politicians p
+        {where}
+        ORDER BY p.full_name ASC
+        LIMIT :limit OFFSET :offset
+        """
+    )
+
+    count_sql = text(
+        f"""
+        SELECT COUNT(*) AS total
+        FROM politicians p
+        {where}
+        """
+    )
+
+    with engine.connect() as conn:
+        rows = conn.execute(sql, params).mappings().all()
+        total_row = conn.execute(count_sql, {k: v for k, v in params.items() if k == "q"}).mappings().first()
+
+    return {
+        "items": [dict(r) for r in rows],
+        "pagination": {
+            "limit": limit,
+            "offset": offset,
+            "returned": len(rows),
+            "total": int((total_row or {}).get("total") or 0),
+        },
+        "filters": {"search": search or ""},
+    }
+
+
 @router.get("/politician/{politician_id}")
 def get_politician(politician_id: str, limit: int = Query(default=50, ge=1, le=200)) -> dict:
     engine = get_engine()

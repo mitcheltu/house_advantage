@@ -21,10 +21,26 @@ export async function fetchLeaderboard() {
   return getJson('/api/v1/leaderboard?limit=25');
 }
 
+export async function fetchSevereLeaderboard(limit = 12) {
+  return getJson(`/api/v1/leaderboard?quadrant=SEVERE&limit=${limit}`);
+}
+
 export async function fetchTradeAudit(tradeId) {
   return getJson(`/api/v1/audit/${tradeId}`);
 }
 
 export async function fetchLatestDailyReport() {
   return getJson('/api/v1/daily-report/latest');
+}
+
+export async function fetchPoliticians(search = '', limit = 25, offset = 0) {
+  const query = new URLSearchParams();
+  if (search) query.set('search', search);
+  query.set('limit', String(limit));
+  query.set('offset', String(offset));
+  return getJson(`/api/v1/politicians?${query.toString()}`);
+}
+
+export async function fetchPoliticianDetail(politicianId, limit = 50) {
+  return getJson(`/api/v1/politician/${politicianId}?limit=${limit}`);
 }
