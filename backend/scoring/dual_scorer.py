@@ -81,20 +81,74 @@ CROSS_CUTTING_KEYWORDS = {
 }
 
 # ── Bill policy_area → trade sector mapping ───────────────────────────────────
+# Kept in sync with POLICY_AREA_SECTOR_MAP in collect_congress_gov.py
 BILL_SECTOR_MAP = {
-    "Agriculture and Food": "agriculture",
+    # Defense
     "Armed Forces and National Security": "defense",
-    "Commerce": "tech",
-    "Economics and Public Finance": "finance",
-    "Energy": "energy",
-    "Finance and Financial Sector": "finance",
-    "Health": "healthcare",
-    "Science, Technology, Communications": "tech",
+    "Defense": "defense",
+    "Emergency Management": "defense",
     "Transportation and Public Works": "defense",
+    "International Affairs": "defense",
+    # Finance
+    "Economics and Public Finance": "finance",
+    "Finance and Financial Sector": "finance",
+    "Taxation": "finance",
+    "Housing and Community Development": "finance",
+    "Foreign Trade and International Finance": "finance",
+    "Labor and Employment": "finance",
+    # Healthcare
+    "Health": "healthcare",
+    "Social Welfare": "healthcare",
+    "Education": "healthcare",
+    "Civil Rights and Liberties, Minority Issues": "healthcare",
+    "Families": "healthcare",
+    # Energy
+    "Energy": "energy",
     "Environmental Protection": "energy",
     "Public Lands and Natural Resources": "energy",
-    "Foreign Trade and International Finance": "finance",
+    "Water Resources Development": "energy",
+    # Tech
+    "Science, Technology, Communications": "tech",
+    "Commerce": "tech",
+    # Agriculture
+    "Agriculture and Food": "agriculture",
+    "Animals": "agriculture",
 }
+
+
+def _parse_sector(raw) -> list[str]:
+    """Parse an industry_sector value from DB/CSV into a list of sector strings.
+
+    Handles all storage formats:
+      - None / NaN              → []
+      - "tech"                  → ["tech"]
+      - '["healthcare", "tech"]' (JSON)  → ["healthcare", "tech"]
+      - "['healthcare', 'tech']" (Python repr) → ["healthcare", "tech"]
+      - ["healthcare", "tech"] (already a list) → ["healthcare", "tech"]
+    """
+    if raw is None or (isinstance(raw, float) and pd.isna(raw)):
+        return []
+    if isinstance(raw, list):
+        return raw
+    s = str(raw).strip()
+    if not s:
+        return []
+    if s.startswith("["):
+        # Try JSON first, then Python literal eval
+        try:
+            parsed = json.loads(s)
+            if isinstance(parsed, list):
+                return [str(x) for x in parsed]
+        except (json.JSONDecodeError, ValueError):
+            pass
+        try:
+            import ast
+            parsed = ast.literal_eval(s)
+            if isinstance(parsed, list):
+                return [str(x) for x in parsed]
+        except (ValueError, SyntaxError):
+            pass
+    return [s]
 
 
 def normalize(raw: np.ndarray) -> np.ndarray:
@@ -126,6 +180,32 @@ def load_trades(conn, only_unscored: bool = True) -> pd.DataFrame:
     if only_unscored:
         sql += " LEFT JOIN anomaly_scores a ON t.id = a.trade_id WHERE a.id IS NULL"
     return pd.read_sql(sql, conn, parse_dates=["trade_date", "disclosure_date"])
+
+
+def load_trade_sectors(conn) -> dict[int, list[str]]:
+    """Load trade_sectors junction table into a trade_id → [sectors] dict.
+
+    Falls back to parsing trades.industry_sector if trade_sectors is empty.
+    """
+    try:
+        df = pd.read_sql("SELECT trade_id, sector FROM trade_sectors", conn)
+    except Exception:
+        df = pd.DataFrame(columns=["trade_id", "sector"])
+
+    if df.empty:
+        # Fallback: parse from trades.industry_sector column
+        raw = pd.read_sql("SELECT id AS trade_id, industry_sector FROM trades", conn)
+        result = {}
+        for _, row in raw.iterrows():
+            sectors = _parse_sector(row["industry_sector"])
+            if sectors:
+                result[int(row["trade_id"])] = sectors
+        return result
+
+    result = {}
+    for trade_id, grp in df.groupby("trade_id"):
+        result[int(trade_id)] = grp["sector"].tolist()
+    return result
 
 
 def load_price_cache(conn) -> dict[str, pd.DataFrame]:
@@ -330,16 +410,22 @@ def compute_committee_relevance(politician_id: int, trade_sector,
 def build_features(trades: pd.DataFrame, price_cache: dict,
                    memberships: pd.DataFrame, votes: pd.DataFrame,
                    bills: pd.DataFrame, amount_stats: pd.DataFrame,
-                   cluster_counts: pd.DataFrame) -> pd.DataFrame:
+                   cluster_counts: pd.DataFrame,
+                   trade_sector_map: dict[int, list[str]] | None = None) -> pd.DataFrame:
     """Compute all 9 V2 features for a batch of trades."""
     n = len(trades)
     trades = trades.copy()
 
-    # Resolve sector
-    trades["sector"] = trades.apply(
-        lambda r: r["industry_sector"] if pd.notna(r["industry_sector"])
-        else TICKER_SECTOR_MAP.get(r["ticker"]), axis=1
-    )
+    # Resolve sector — prefer junction table, fall back to parsing DB column/ticker map
+    def _resolve_sector(r):
+        tid = int(r["trade_id"])
+        if trade_sector_map and tid in trade_sector_map:
+            return trade_sector_map[tid]
+        parsed = _parse_sector(r["industry_sector"])
+        if not parsed:
+            parsed = _parse_sector(TICKER_SECTOR_MAP.get(r["ticker"]))
+        return parsed
+    trades["sector"] = trades.apply(_resolve_sector, axis=1)
 
     # 1. cohort_alpha (30-day post-trade excess return)
     print(f"  Computing cohort_alpha for {n} trades...")
@@ -466,11 +552,14 @@ def score_and_store(rescore_all: bool = False):
         print(f"[dual_scorer] Loaded amount stats for {len(amount_stats)} politicians")
         cluster_counts = load_cluster_counts(conn)
         print(f"[dual_scorer] Loaded cluster counts for {len(cluster_counts)} trades")
+        trade_sector_map = load_trade_sectors(conn)
+        print(f"[dual_scorer] Loaded sectors for {len(trade_sector_map)} trades from junction table")
 
         # Build features
         print("\n[dual_scorer] Computing V2 features...")
         trades = build_features(trades, price_cache, memberships, votes,
-                                bills, amount_stats, cluster_counts)
+                                bills, amount_stats, cluster_counts,
+                                trade_sector_map=trade_sector_map)
 
         # Drop trades without cohort_alpha (no price data)
         before = len(trades)

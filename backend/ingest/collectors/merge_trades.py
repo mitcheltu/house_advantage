@@ -68,7 +68,9 @@ def merge_trades() -> pd.DataFrame:
 
     # Standardize to the schema expected downstream
     merged["politician_id"] = merged.get("politician_name", merged.get("full_name", ""))
-    merged["industry_sector"] = merged["ticker"].map(TICKER_SECTOR_MAP)
+    merged["industry_sector"] = merged["ticker"].map(TICKER_SECTOR_MAP).apply(
+        lambda v: json.dumps(v) if isinstance(v, list) else v
+    )
     merged["source_url"] = merged.get("doc_id", "").apply(
         lambda x: f"https://disclosures-clerk.house.gov/public_disc/ptr-pdfs/{x}.pdf"
         if x else ""

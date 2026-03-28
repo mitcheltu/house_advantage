@@ -246,7 +246,7 @@ def assign_quadrant(cohort_index: int, baseline_index: int) -> str:
 
 ## 5. Database Schema
 
-> **Note:** Unchanged V2 tables (politicians, committees, committee_memberships, trades, baseline_trades, votes, politician_votes, bills, donors, stock_prices, institutional_holdings, institutional_trades, cusip_ticker_map, anomaly_scores, systemic_stats, pac_contributions) are preserved as-is from Version 2. Only modified and new tables are shown below.
+> **Note:** Unchanged V2 tables (politicians, committees, committee_memberships, trades, trade_sectors, baseline_trades, votes, politician_votes, bills, donors, stock_prices, institutional_holdings, institutional_trades, cusip_ticker_map, anomaly_scores, systemic_stats, pac_contributions) are preserved as-is from Version 2. The `trade_sectors` junction table was added in V2 to normalise multi-sector trade mappings (see V2 schema). Only modified and new tables are shown below.
 
 ### Modified: `audit_reports` (V3 — added GenMedia fields)
 
@@ -649,7 +649,7 @@ def build_initial_message(trade) -> str:
 Investigate the following congressional trade:
 
 Politician: {trade.full_name} (ID: {trade.politician_id})
-Ticker: {trade.ticker} | Sector: {trade.industry_sector or 'unknown'}
+Ticker: {trade.ticker} | Sectors: {', '.join(trade.sectors) if trade.sectors else 'unknown'}
 Trade: {trade.trade_type.upper()} on {trade.trade_date}
 Disclosed: {trade.disclosure_date} ({trade.disclosure_lag_days} days after trade)
 Amount Estimate: ${trade.amount_midpoint:,}

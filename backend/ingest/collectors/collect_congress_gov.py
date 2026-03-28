@@ -117,38 +117,40 @@ def collect_politicians() -> pd.DataFrame:
 
 # Maps Congress.gov policyArea.name → model's 7 industry sectors
 POLICY_AREA_SECTOR_MAP = {
+    # Defense
     "Armed Forces and National Security": "defense",
     "Defense": "defense",
     "Emergency Management": "defense",
-    "Immigration": "defense",
-    "Crime and Law Enforcement": "defense",
+    "Transportation and Public Works": "defense",
+    "International Affairs": "defense",
+    # Finance
     "Economics and Public Finance": "finance",
     "Finance and Financial Sector": "finance",
     "Taxation": "finance",
     "Housing and Community Development": "finance",
     "Foreign Trade and International Finance": "finance",
+    "Labor and Employment": "finance",
+    # Healthcare
     "Health": "healthcare",
     "Social Welfare": "healthcare",
+    "Education": "healthcare",
+    "Civil Rights and Liberties, Minority Issues": "healthcare",
+    "Families": "healthcare",
+    # Energy
     "Energy": "energy",
     "Environmental Protection": "energy",
     "Public Lands and Natural Resources": "energy",
     "Water Resources Development": "energy",
+    # Tech
     "Science, Technology, Communications": "tech",
-    "Government Operations and Politics": "tech",
-    "Commerce": "agriculture",
+    "Commerce": "tech",
+    # Agriculture
     "Agriculture and Food": "agriculture",
     "Animals": "agriculture",
-    "Transportation and Public Works": "defense",
-    "Education": "healthcare",
-    "Labor and Employment": "agriculture",
-    "International Affairs": "defense",
-    "Native Americans": "agriculture",
-    "Sports and Recreation": "telecom",
-    "Arts, Culture, Religion": "telecom",
-    "Civil Rights and Liberties, Minority Issues": "healthcare",
-    "Families": "healthcare",
-    "Congress": "finance",
-    "Law": "finance",
+    # Unmapped (too generic or no clear sector correlation):
+    # "Immigration", "Crime and Law Enforcement", "Government Operations and Politics",
+    # "Native Americans", "Sports and Recreation", "Arts, Culture, Religion",
+    # "Congress", "Law"
 }
 
 

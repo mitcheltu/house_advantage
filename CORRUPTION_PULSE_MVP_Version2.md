@@ -258,6 +258,19 @@ CREATE TABLE trades (
     INDEX idx_sector (industry_sector)
 );
 
+-- ── Trade Sectors (Junction Table) ───────────────────────────
+-- Normalised multi-sector mapping for trades. A single trade can
+-- map to multiple sectors (e.g. MSFT → tech + defense).
+-- Populated from _combined_sector_map.json via migrate_trade_sectors.py.
+-- ~9,931 rows; 1,248 trades have multiple sectors.
+CREATE TABLE IF NOT EXISTS trade_sectors (
+    trade_id    INT NOT NULL,
+    sector      VARCHAR(50) NOT NULL,
+    PRIMARY KEY (trade_id, sector),
+    FOREIGN KEY (trade_id) REFERENCES trades(id) ON DELETE CASCADE,
+    INDEX idx_sector (sector)
+);
+
 -- ── Baseline Trades (SEC 13-F Derived) ──────────────────────
 -- These are NOT real individual trades — they are inferred quarterly
 -- position changes from 13-F filings, used exclusively for training

@@ -2,6 +2,7 @@ from fastapi import APIRouter, HTTPException
 from sqlalchemy import text
 
 from backend.db.connection import get_engine
+from backend.scoring.dual_scorer import _parse_sector
 
 router = APIRouter(prefix="/api/v1", tags=["audit"])
 
@@ -93,8 +94,10 @@ def get_audit(trade_id: int) -> dict:
         audit = conn.execute(audit_sql, {"trade_id": trade_id}).mappings().first()
         media = conn.execute(media_sql, {"trade_id": trade_id}).mappings().all()
 
+    trade_dict = dict(trade)
+    trade_dict["sectors"] = _parse_sector(trade_dict.get("industry_sector"))
     return {
-        "trade": dict(trade),
+        "trade": trade_dict,
         "audit_report": dict(audit) if audit else None,
         "media_assets": [dict(m) for m in media],
     }

@@ -265,7 +265,11 @@ FEATURES = [
     "cluster_score", "disclosure_lag",
 ]
 
-# ── Ticker → sector map (734 tickers → 7 model sectors) ──────────────────────
+# ── Ticker → sector map (~963 tickers → 7 model sectors) ─────────────────────
+# 33 tickers carry multi-sector lists (e.g. MSFT → ["tech", "defense"]).
+# Multi-sector data is persisted in the `trade_sectors` junction table.
+# The `_parse_sector()` helper normalises DB strings (JSON arrays, Python repr
+# lists, plain strings, None/NaN) into a clean list[str] at every read point.
 TICKER_SECTOR_MAP = json.load(open("data/raw/_combined_sector_map.json"))
 
 # ── Multi-sector committee map ────────────────────────────────────────────────
@@ -372,8 +376,8 @@ def compute_committee_relevance(row: pd.Series, memberships: pd.DataFrame) -> fl
     if not raw_sector or not pid:
         return 0.0
     
-    # Normalise: single string → list for uniform handling
-    sectors = raw_sector if isinstance(raw_sector, list) else [raw_sector]
+    # Normalise via _parse_sector (handles None, NaN, JSON list, Python repr list, plain string)
+    sectors = _parse_sector(raw_sector)
     
     pol_memberships = memberships[memberships["politician_id"] == pid]
     if pol_memberships.empty:
@@ -1628,7 +1632,8 @@ pytest==8.3.3
 | Politicians | `data/raw/politicians_raw.csv` | 548 | id (bioguide), full_name, party, state, chamber |
 | Committee memberships | `data/raw/committee_memberships_raw.csv` | 3,908 | politician_id, committee_name, role (532 unique politicians) |
 | PAC contributions | `data/raw/fec_pac_contributions_raw.csv` | 10,000 | candidate_id, contributor_name, amount |
-| Ticker→sector map | `data/raw/_combined_sector_map.json` | 734 tickers | ticker → sector (defense, finance, healthcare, energy, tech, agriculture, telecom) |
+| Ticker→sector map | `data/raw/_combined_sector_map.json` | ~963 tickers | ticker → sector (defense, finance, healthcare, energy, tech, agriculture, telecom); 33 tickers have multi-sector lists |
+| Trade→sector junction | `trade_sectors` table (DB) | ~9,931 rows | (trade_id, sector) — normalised multi-sector lookup; populated from `_combined_sector_map.json` via `migrate_trade_sectors.py` |
 | Stock prices (daily OHLCV) | `data/raw/prices/*.csv` | 1,697 tickers | date, close |
 | CUSIP→ticker map | `data/raw/cusip_ticker_map.csv` | Not yet built | cusip, ticker (via OpenFIGI) |
 
@@ -1675,8 +1680,8 @@ pytest==8.3.3
 | Attribute | Value |
 |---|---|
 | **Formula** | Continuous 0.0–1.0. For each committee the politician serves on, check if it has jurisdiction over the traded stock's sector. Weight by role: Chair/Ranking Member of matched committee → 1.0, regular member → 0.7, Appropriations (any sector) → 0.4, Intelligence (defense/tech) → 0.5. Take the MAX across all memberships. |
-| **Data sources** | `committee_memberships_raw.csv` (3,908 memberships, 532 unique politicians), `_combined_sector_map.json` (734 tickers → 7 sectors; 32 multi-sector tickers as lists) |
-| **Linkage** | Curated multi-sector committee map (`COMMITTEE_SECTORS` dict, 21 standing committees + 4 cross-cutting). Each committee maps to 1–7 regulated sectors based on House/Senate rules and CRS jurisdiction reports. 32 major tickers (MSFT, AMZN, INTC, CSCO, etc.) carry multi-sector tags — e.g. MSFT → ["tech", "defense"] — enabling cross-committee signal for conglomerates. |
+| **Data sources** | `committee_memberships_raw.csv` (3,908 memberships, 532 unique politicians), `_combined_sector_map.json` (~963 tickers → 7 sectors; 33 multi-sector tickers as lists), `trade_sectors` junction table (~9,931 rows) |
+| **Linkage** | Curated multi-sector committee map (`COMMITTEE_SECTORS` dict, 21 standing committees + 4 cross-cutting). Each committee maps to 1–7 regulated sectors based on House/Senate rules and CRS jurisdiction reports. 33 tickers (MSFT, AMZN, INTC, CSCO, GE, etc.) carry multi-sector tags — e.g. MSFT → ["tech", "defense"] — enabling cross-committee signal for conglomerates. Multi-sector data is stored in the `trade_sectors` junction table and parsed at read time via `_parse_sector()`. |
 | **Coverage** | **~41% effective signal** → **~44% with multi-sector tickers** (+201 trades gain non-zero scores, +5.6% variance improvement). The continuous score provides meaningful non-zero values due to multi-sector committee tagging, cross-cutting committee rules, and multi-sector ticker mapping. |
 | **Missing handling** | Returns 0.0 if bioguide unresolved or ticker has no sector mapping |
 | **Interpretation** | Strength of regulatory oversight conflict. 1.0 = committee chair directly overseeing the traded sector. 0.7 = regular member. 0.4–0.5 = cross-cutting committee (Appropriations funds all sectors; Intelligence touches defense + tech). 0.0 = no committee overlap. |

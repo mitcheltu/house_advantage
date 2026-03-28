@@ -6,6 +6,8 @@ Database Setup & CSV Loader
 - Handles FK resolution (bioguide IDs / names → integer PKs)
 - Handles ENUM capitalization (house → House, yes → Yes, etc.)
 """
+import ast
+import json
 import logging
 import os
 from pathlib import Path
@@ -321,6 +323,68 @@ def load_trades(engine, bioguide_map: dict):
     resolved = df["politician_id"].notna().sum()
     count = _insert_df(df, "trades", engine)
     log.info(f"  Loaded {count} trades ({resolved} linked to politicians)")
+
+
+def _parse_sector_value(raw) -> list[str]:
+    """Parse an industry_sector CSV/DB value into a list of sector strings."""
+    if raw is None or (isinstance(raw, float) and pd.isna(raw)):
+        return []
+    s = str(raw).strip()
+    if not s:
+        return []
+    if s.startswith("["):
+        try:
+            parsed = json.loads(s)
+            if isinstance(parsed, list):
+                return [str(x) for x in parsed]
+        except (json.JSONDecodeError, ValueError):
+            pass
+        try:
+            parsed = ast.literal_eval(s)
+            if isinstance(parsed, list):
+                return [str(x) for x in parsed]
+        except (ValueError, SyntaxError):
+            pass
+    return [s]
+
+
+def _populate_trade_sectors(engine):
+    """Populate trade_sectors junction table from ticker→sector map + trades.industry_sector."""
+    # Load the authoritative ticker→sector map (includes multi-sector overrides)
+    sector_map_path = DATA_RAW / "_combined_sector_map.json"
+    ticker_sector_map = {}
+    if sector_map_path.exists():
+        ticker_sector_map = json.load(open(sector_map_path))
+
+    _truncate(engine, "trade_sectors")
+    with engine.connect() as conn:
+        rows = conn.execute(text(
+            "SELECT id, ticker, industry_sector FROM trades"
+        )).fetchall()
+
+    insert_rows = []
+    multi_count = 0
+    for trade_id, ticker, raw_sector in rows:
+        # Prefer ticker map (has multi-sector overrides), fall back to DB column
+        map_val = ticker_sector_map.get(ticker) if ticker else None
+        if map_val is not None:
+            sectors = map_val if isinstance(map_val, list) else [str(map_val)]
+        elif raw_sector:
+            sectors = _parse_sector_value(raw_sector)
+        else:
+            continue
+
+        if len(sectors) > 1:
+            multi_count += 1
+        for sector in sectors:
+            insert_rows.append({"trade_id": trade_id, "sector": sector})
+
+    if insert_rows:
+        insert_df = pd.DataFrame(insert_rows)
+        _insert_df(insert_df, "trade_sectors", engine)
+
+    log.info(f"  Populated {len(insert_rows)} trade_sector rows "
+             f"({multi_count} trades have multiple sectors)")
 
 
 def load_votes(engine) -> dict[str, int]:
@@ -715,6 +779,7 @@ def load_all():
 
     log.info("[4/7] Trades...")
     load_trades(engine, bioguide_map)
+    _populate_trade_sectors(engine)
 
     log.info("[5/7] Votes & Politician Votes...")
     vote_map = load_votes(engine)

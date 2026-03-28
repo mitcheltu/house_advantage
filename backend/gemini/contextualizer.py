@@ -16,6 +16,7 @@ from typing import Any
 from sqlalchemy import text
 
 from backend.db.connection import get_engine
+from backend.scoring.dual_scorer import _parse_sector
 
 try:
     import google.generativeai as genai
@@ -193,7 +194,13 @@ def _fetch_trade_context(trade_id: int) -> dict[str, Any] | None:
     )
     with engine.connect() as conn:
         row = conn.execute(sql, {"trade_id": trade_id}).mappings().first()
-        return dict(row) if row else None
+        if not row:
+            return None
+        result = dict(row)
+        # Parse stringified sector lists from DB into clean display format
+        sectors = _parse_sector(result.get("industry_sector"))
+        result["industry_sector"] = ", ".join(sectors) if sectors else None
+        return result
 
 
 def _upsert_audit_report(trade_id: int, trade: dict[str, Any], result: ContextualizerResult) -> None:
