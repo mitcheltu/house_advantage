@@ -29,8 +29,16 @@ def get_engine(database: str | None = None):
     user = os.getenv("MYSQL_USER", "root")
     password = os.getenv("MYSQL_PASSWORD", "")
     db = database or os.getenv("MYSQL_DATABASE", "house_advantage")
+    unix_socket = os.getenv("MYSQL_UNIX_SOCKET", "")
 
-    url = f"mysql+pymysql://{user}:{quote_plus(password)}@{host}:{port}/{db}?charset=utf8mb4"
+    if unix_socket:
+        socket_param = quote_plus(unix_socket)
+        url = (
+            f"mysql+pymysql://{user}:{quote_plus(password)}@/{db}"
+            f"?unix_socket={socket_param}&charset=utf8mb4"
+        )
+    else:
+        url = f"mysql+pymysql://{user}:{quote_plus(password)}@{host}:{port}/{db}?charset=utf8mb4"
     return create_engine(url, pool_pre_ping=True, pool_recycle=3600)
 
 

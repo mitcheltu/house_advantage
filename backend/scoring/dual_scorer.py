@@ -42,6 +42,9 @@ DB_CFG = dict(
     password=os.getenv("MYSQL_PASSWORD", ""),
     database=os.getenv("MYSQL_DATABASE", "house_advantage"),
 )
+_unix_socket = os.getenv("MYSQL_UNIX_SOCKET", "")
+if _unix_socket:
+    DB_CFG["unix_socket"] = _unix_socket
 
 FEATURES = [
     "cohort_alpha", "pre_trade_alpha", "proximity_days", "bill_proximity",
@@ -50,9 +53,14 @@ FEATURES = [
 ]
 
 # ── Sector map for tickers ────────────────────────────────────────────────────
-TICKER_SECTOR_MAP = json.loads(
-    (ROOT / "backend" / "data" / "raw" / "_combined_sector_map.json").read_text()
-)
+_SECTOR_MAP_PATH = ROOT / "backend" / "data" / "raw" / "_combined_sector_map.json"
+try:
+    if _SECTOR_MAP_PATH.exists():
+        TICKER_SECTOR_MAP = json.loads(_SECTOR_MAP_PATH.read_text())
+    else:
+        TICKER_SECTOR_MAP = {}
+except Exception:
+    TICKER_SECTOR_MAP = {}
 
 # ── Committee → sector mapping (uses DB committee names, not Congress.gov names)
 # We match on keywords within committee names to their sector tags.
