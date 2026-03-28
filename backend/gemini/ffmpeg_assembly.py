@@ -81,6 +81,8 @@ def assemble_video_with_audio(
         "pix_fmt": "yuv420p",
         "acodec": "aac",
         "audio_bitrate": "192k",
+        "ar": 44100,
+        "ac": 2,
         "movflags": "+faststart",
     }
     if target_duration:
@@ -190,14 +192,14 @@ def overlay_citation_images(
     video_path: str,
     citation_image_paths: list[str],
     output_path: str,
-    image_width: int = 300,
+    image_width: int = 900,
     overwrite: bool = True,
 ) -> dict[str, Any]:
     """Overlay citation card images as picture-in-picture at timed intervals.
 
-    Each citation image is scaled to *image_width* pixels wide and shown in the
-    upper-right corner of the video for a segment of the video duration.  This is
-    the FFmpeg fallback for when Veo reference images are unavailable.
+    Each citation image is scaled to *image_width* pixels wide and shown
+    centered on the video for a segment of the video duration.  This is the
+    FFmpeg fallback for when Veo reference images are unavailable.
     """
     ffmpeg_bin = _resolve_ffmpeg_bin()
     video_duration = _probe_duration(Path(video_path)) or 30.0
@@ -233,7 +235,7 @@ def overlay_citation_images(
 
         filter_parts.append(f"[{i + 1}:v]scale={image_width}:-1[{scale_label}]")
         filter_parts.append(
-            f"[{prev_label}][{scale_label}]overlay=W-w-30:30:"
+            f"[{prev_label}][{scale_label}]overlay=(W-w)/2:(H-h)/2:"
             f"enable='between(t,{start_time:.1f},{end_time:.1f})'[{out_label}]"
         )
         prev_label = out_label
@@ -250,7 +252,7 @@ def overlay_citation_images(
         output_path,
     ])
 
-    subprocess.run(cmd_parts, check=True, capture_stdout=True, capture_stderr=True)
+    subprocess.run(cmd_parts, check=True, capture_output=True)
 
     out_path = Path(output_path)
     return {

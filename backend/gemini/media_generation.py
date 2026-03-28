@@ -156,9 +156,24 @@ def _estimate_duration_seconds(script_text: str) -> float:
     return float(max(8, min(120, round(words / 2.4))))
 
 
+def _resolve_ffprobe_bin() -> str:
+    custom = os.getenv("FFPROBE_BIN", "").strip()
+    if custom:
+        return custom
+    ffmpeg_bin = os.getenv("FFMPEG_BIN", "").strip()
+    if ffmpeg_bin:
+        sibling = Path(ffmpeg_bin).with_name("ffprobe")
+        if sibling.exists():
+            return str(sibling)
+        sibling_exe = Path(ffmpeg_bin).with_name("ffprobe.exe")
+        if sibling_exe.exists():
+            return str(sibling_exe)
+    return shutil.which("ffprobe") or "ffprobe"
+
+
 def _probe_duration(path: Path) -> float | None:
     try:
-        info = ffmpeg.probe(str(path))
+        info = ffmpeg.probe(str(path), cmd=_resolve_ffprobe_bin())
         fmt = info.get("format", {})
         return float(fmt.get("duration")) if fmt.get("duration") else None
     except Exception:
@@ -167,7 +182,7 @@ def _probe_duration(path: Path) -> float | None:
 
 def _probe_resolution(path: Path) -> str | None:
     try:
-        info = ffmpeg.probe(str(path))
+        info = ffmpeg.probe(str(path), cmd=_resolve_ffprobe_bin())
         for stream in info.get("streams", []):
             if stream.get("codec_type") == "video":
                 width = stream.get("width")
@@ -491,7 +506,6 @@ def generate_citation_image(
         "contents": [{"parts": [{"text": prompt}]}],
         "generationConfig": {
             "responseModalities": ["IMAGE"],
-            "responseMimeType": "image/png",
         },
     }
 
@@ -514,6 +528,18 @@ def generate_citation_image(
                 b64 = inline_data.get("data", "")
                 if b64:
                     image_bytes = base64.b64decode(b64)
+                    # Always trust magic bytes over API-reported mimeType
+                    if image_bytes[:2] == b'\xff\xd8':
+                        output = output.with_suffix(".jpg")
+                    elif image_bytes[:4] == b'\x89PNG':
+                        output = output.with_suffix(".png")
+                    else:
+                        # Unknown format — keep original extension
+                        pass
+                    # Remove stale file if extension changed (e.g. .png -> .jpg)
+                    requested = Path(output_path)
+                    if requested != output and requested.exists():
+                        requested.unlink(missing_ok=True)
                     output.write_bytes(image_bytes)
                     return {
                         "path": str(output),
@@ -658,11 +684,19 @@ def _poll_google_operation_video_url(
             url = _extract_first(payload, result_video_paths)
             if url:
                 return str(url)
+            # Operation done but no video — likely content filtered or failed
+            _veo_debug("google-poll-done-no-video", payload)
+            error_info = payload.get("error") or payload.get("response", {}).get("error")
+            if error_info:
+                print(f"[veo] Operation done with error: {error_info}")
+            else:
+                print(f"[veo] Operation done but no video URL found in response keys: {list(payload.keys())}")
             return None
 
         err = payload.get("error")
         if err:
             _veo_debug("google-poll-error", payload)
+            print(f"[veo] Operation error: {err}")
             return None
 
         time.sleep(max(1, poll_every))
@@ -766,11 +800,24 @@ def _try_google_genai_veo(
         for img_path in reference_image_paths[:3]:
             img_file = Path(img_path)
             if img_file.exists():
-                img_b64 = base64.b64encode(img_file.read_bytes()).decode("ascii")
+                raw = img_file.read_bytes()
+                img_b64 = base64.b64encode(raw).decode("ascii")
+                # Detect MIME from magic bytes, not file extension
+                if raw[:2] == b'\xff\xd8':
+                    mime = "image/jpeg"
+                elif raw[:4] == b'\x89PNG':
+                    mime = "image/png"
+                elif raw[:4] == b'RIFF' and raw[8:12] == b'WEBP':
+                    mime = "image/webp"
+                else:
+                    mime = "image/jpeg"  # safe default
                 reference_images.append({
                     "referenceType": ref_type,
                     "referenceImage": {
-                        "image": {"imageBytes": img_b64}
+                        "image": {
+                            "imageBytes": img_b64,
+                            "mimeType": mime,
+                        }
                     },
                 })
     # Force 8s duration when references are used (API requirement)
@@ -896,6 +943,34 @@ def _try_google_genai_veo(
     }
 
 
+def _sanitize_prompt_for_veo(prompt: str) -> str:
+    """Strip real people's names from video prompts to avoid Veo RAI filters.
+
+    Veo rejects prompts containing real people's names or likenesses.
+    We replace common politician name patterns with generic labels.
+    """
+    import re
+
+    # Replace patterns like "Rep. Letlow", "Sen. Whitehouse", "Representative Julia Letlow"
+    prompt = re.sub(
+        r"\b(Rep(?:resentative)?|Sen(?:ator)?)\.\s+[A-Z][a-z]+(?:\s+[A-Z][a-z]+)*",
+        r"a Member of Congress",
+        prompt,
+    )
+    prompt = re.sub(
+        r"\b(Representative|Senator)\s+[A-Z][a-z]+(?:\s+[A-Z][a-z]+)*",
+        r"a Member of Congress",
+        prompt,
+    )
+    # Replace "'Rep. Lastname | TICKER'" patterns in overlaid text
+    prompt = re.sub(
+        r"'(?:Rep|Sen)\.\s+[A-Z][a-z]+\s*\|",
+        "'A Lawmaker |",
+        prompt,
+    )
+    return prompt
+
+
 def generate_video_from_prompt(
     prompt: str,
     output_path: str,
@@ -906,36 +981,58 @@ def generate_video_from_prompt(
     output = Path(output_path)
     output.parent.mkdir(parents=True, exist_ok=True)
 
+    # Sanitize prompt to avoid Veo RAI content filter rejections
+    prompt = _sanitize_prompt_for_veo(prompt)
+
     endpoint = os.getenv("VEO_API_ENDPOINT", "").strip()
     api_key = os.getenv("VEO_API_KEY", "").strip() or os.getenv("GEMINI_API_KEY", "").strip()
     timeout_seconds = int(os.getenv("VEO_TIMEOUT_SECONDS", "600"))
     provider = os.getenv("VEO_PROVIDER", "auto").strip().lower()
 
+    max_retries = int(os.getenv("VEO_RETRIES", "2"))
+    last_veo_error: str | None = None
+
     if provider in {"google", "google-genai", "genai", "auto"} and not endpoint:
-        result = _try_google_genai_veo(
-            api_key=api_key,
-            prompt=prompt,
-            output=output,
-            duration_seconds=duration_seconds,
-            aspect_ratio=aspect_ratio,
-            timeout_seconds=timeout_seconds,
-            reference_image_paths=reference_image_paths,
-        )
-        if result:
-            return result
+        for attempt in range(max_retries + 1):
+            try:
+                result = _try_google_genai_veo(
+                    api_key=api_key,
+                    prompt=prompt,
+                    output=output,
+                    duration_seconds=duration_seconds,
+                    aspect_ratio=aspect_ratio,
+                    timeout_seconds=timeout_seconds,
+                    reference_image_paths=reference_image_paths,
+                )
+                if result:
+                    return result
+                last_veo_error = f"Veo attempt {attempt+1}: returned no video (operation may have failed or timed out)"
+            except Exception as exc:
+                last_veo_error = f"Veo attempt {attempt+1}: {exc}"
+            _veo_debug("google-attempt-failed", {"attempt": attempt + 1, "error": last_veo_error})
+            if attempt < max_retries:
+                wait = 10 * (attempt + 1)
+                _veo_debug("google-retry", {"attempt": attempt + 1, "max_retries": max_retries, "wait_seconds": wait})
+                time.sleep(wait)
 
     if endpoint:
-        result = _try_generic_endpoint(
-            endpoint=endpoint,
-            api_key=api_key,
-            prompt=prompt,
-            output=output,
-            duration_seconds=duration_seconds,
-            aspect_ratio=aspect_ratio,
-            timeout_seconds=timeout_seconds,
-        )
-        if result:
-            return result
+        try:
+            result = _try_generic_endpoint(
+                endpoint=endpoint,
+                api_key=api_key,
+                prompt=prompt,
+                output=output,
+                duration_seconds=duration_seconds,
+                aspect_ratio=aspect_ratio,
+                timeout_seconds=timeout_seconds,
+            )
+            if result:
+                return result
+        except Exception as exc:
+            last_veo_error = f"Generic endpoint: {exc}"
 
     # Always keep pipeline runnable even if Veo is not configured
-    return _generate_placeholder_video(output, duration_seconds=duration_seconds)
+    fallback = _generate_placeholder_video(output, duration_seconds=duration_seconds)
+    if last_veo_error:
+        fallback["error"] = last_veo_error
+    return fallback
