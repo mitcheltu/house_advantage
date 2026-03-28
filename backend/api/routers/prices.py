@@ -2,6 +2,7 @@ from datetime import date, datetime
 
 from fastapi import APIRouter, HTTPException, Query
 from sqlalchemy import text
+from sqlalchemy.exc import ProgrammingError
 
 from backend.db.connection import get_engine
 
@@ -48,8 +49,18 @@ def get_prices(
         """
     )
 
-    with engine.connect() as conn:
-        rows = conn.execute(sql, params).mappings().all()
+    try:
+        with engine.connect() as conn:
+            rows = conn.execute(sql, params).mappings().all()
+    except ProgrammingError:
+        return {
+            "ticker": ticker.upper(),
+            "start": start_date.isoformat() if start_date else None,
+            "end": end_date.isoformat() if end_date else None,
+            "count": 0,
+            "prices": [],
+            "warning": "stock_prices table not available",
+        }
 
     return {
         "ticker": ticker.upper(),

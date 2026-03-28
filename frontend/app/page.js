@@ -18,7 +18,7 @@ export default async function HomePage() {
   try {
     const [dailyReportData, severeData] = await Promise.all([
       fetchLatestDailyReport().catch(() => null),
-      fetchSevereLeaderboard(12).catch(() => null),
+      fetchSevereLeaderboard(200).catch(() => null),
     ]);
 
     dailyReport = dailyReportData;

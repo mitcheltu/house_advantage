@@ -24,6 +24,10 @@ function isBuyTrade(tradeType) {
   return normalized.includes('buy') || normalized.includes('purchase');
 }
 
+function normalizeTicker(value) {
+  return String(value || '').trim().toUpperCase();
+}
+
 function Sparkline({ prices, markerDate }) {
   if (!prices?.length) return <div className="sparkline-empty">No price data</div>;
 
@@ -84,29 +88,44 @@ function scoreWidth(value) {
 export default function PoliticianSearch() {
   const [query, setQuery] = useState('');
   const [results, setResults] = useState([]);
+  const [page, setPage] = useState(0);
+  const [hasMore, setHasMore] = useState(false);
   const [selectedId, setSelectedId] = useState(null);
   const [detail, setDetail] = useState(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [priceCache, setPriceCache] = useState({});
   const inflightRef = useRef(new Set());
+  const pageSize = 12;
 
   const selectedTrade = useMemo(() => detail?.trades || [], [detail]);
 
   useEffect(() => {
+    setPage(0);
+  }, [query]);
+
+  useEffect(() => {
     if (!query) {
       setResults([]);
+      setHasMore(false);
       return;
     }
 
     const handle = setTimeout(() => {
-      fetchPoliticians(query, 25, 0)
-        .then((data) => setResults(data.items || []))
-        .catch(() => setResults([]));
+      fetchPoliticians(query, pageSize + 1, page * pageSize)
+        .then((data) => {
+          const items = data.items || [];
+          setResults(items.slice(0, pageSize));
+          setHasMore(items.length > pageSize);
+        })
+        .catch(() => {
+          setResults([]);
+          setHasMore(false);
+        });
     }, 300);
 
     return () => clearTimeout(handle);
-  }, [query]);
+  }, [query, page]);
 
   async function handleSelect(politician) {
     setSelectedId(politician.id);
@@ -127,16 +146,25 @@ export default function PoliticianSearch() {
     if (!selectedTrade.length) return;
 
     selectedTrade.forEach((trade) => {
-      if (!isBuyTrade(trade.trade_type) || !trade.ticker || !trade.trade_date) return;
+      const ticker = normalizeTicker(trade.ticker);
+      if (!ticker || !trade.trade_date) return;
       const start = addDays(trade.trade_date, -30);
       const end = addDays(trade.trade_date, 30);
-      const key = `${trade.ticker}-${start}-${end}`;
+      const key = `${ticker}-${start}-${end}`;
       if (priceCache[key] || inflightRef.current.has(key)) return;
 
       inflightRef.current.add(key);
-      fetchTickerPrices(trade.ticker, start, end)
+      fetchTickerPrices(ticker, start, end)
         .then((data) => {
-          setPriceCache((prev) => ({ ...prev, [key]: data.prices || [] }));
+          const prices = data.prices || [];
+          if (prices.length) {
+            setPriceCache((prev) => ({ ...prev, [key]: prices }));
+            return null;
+          }
+          return fetchTickerPrices(ticker).then((fallback) => {
+            setPriceCache((prev) => ({ ...prev, [key]: fallback.prices || [] }));
+            return null;
+          });
         })
         .catch(() => {
           setPriceCache((prev) => ({ ...prev, [key]: [] }));
@@ -149,18 +177,20 @@ export default function PoliticianSearch() {
 
   return (
     <section className="politician-layout">
-      <div className="search-panel">
-        <label className="search-label" htmlFor="politician-search">Search member</label>
-        <div className="search-input">
-          <input
-            id="politician-search"
-            type="search"
-            placeholder="Search by name or state (e.g., Nancy Pelosi, CA)"
-            value={query}
-            onChange={(event) => setQuery(event.target.value)}
-          />
+      <div className="search-panel-top">
+        <div className="search-field">
+          <label className="search-label" htmlFor="politician-search">Search member</label>
+          <div className="search-input">
+            <input
+              id="politician-search"
+              type="search"
+              placeholder="Search by name or state (e.g., Nancy Pelosi, CA)"
+              value={query}
+              onChange={(event) => setQuery(event.target.value)}
+            />
+          </div>
         </div>
-        <div className="results-list">
+        <div className="results-list results-grid">
           {query && !results.length ? <div className="empty-state">No matches yet.</div> : null}
           {results.map((item) => (
             <button
@@ -179,9 +209,32 @@ export default function PoliticianSearch() {
             </button>
           ))}
         </div>
+        {query ? (
+          <div className="results-pagination">
+            <button
+              type="button"
+              className="page-button"
+              onClick={() => setPage((prev) => Math.max(0, prev - 1))}
+              disabled={page === 0}
+              aria-label="Previous page"
+            >
+              ←
+            </button>
+            <span className="page-indicator">Page {page + 1}</span>
+            <button
+              type="button"
+              className="page-button"
+              onClick={() => setPage((prev) => prev + 1)}
+              disabled={!hasMore}
+              aria-label="Next page"
+            >
+              →
+            </button>
+          </div>
+        ) : null}
       </div>
 
-      <div className="detail-panel">
+      <div className="detail-panel full-width">
         {loading ? <div className="card">Loading…</div> : null}
         {error ? <div className="error">{error}</div> : null}
         {!loading && !detail && !error ? (
@@ -247,18 +300,21 @@ export default function PoliticianSearch() {
                   {selectedTrade.map((trade) => (
                     <tr key={trade.trade_id}>
                       <td>{formatDate(trade.trade_date)}</td>
-                      <td>{trade.ticker || '—'}</td>
+                      <td>{normalizeTicker(trade.ticker) || '—'}</td>
                       <td>{trade.trade_type || '—'}</td>
                       <td>{trade.amount_midpoint || '—'}</td>
                       <td>
-                        {isBuyTrade(trade.trade_type) && trade.ticker && trade.trade_date ? (
+                        {normalizeTicker(trade.ticker) && trade.trade_date ? (
                           (() => {
+                            const ticker = normalizeTicker(trade.ticker);
                             const start = addDays(trade.trade_date, -30);
                             const end = addDays(trade.trade_date, 30);
-                            const key = `${trade.ticker}-${start}-${end}`;
-                            return (
-                              <Sparkline prices={priceCache[key]} markerDate={trade.trade_date} />
-                            );
+                            const key = `${ticker}-${start}-${end}`;
+                            if (!(key in priceCache)) {
+                              return <div className="sparkline-empty">Loading price data…</div>;
+                            }
+                            const prices = priceCache[key];
+                            return <Sparkline prices={prices} markerDate={trade.trade_date} />;
                           })()
                         ) : (
                           '—'
