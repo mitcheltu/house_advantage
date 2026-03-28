@@ -167,7 +167,7 @@ export default function DailyClient({ dailyReport, severeVideos }) {
               ) : null}
               <div className="video-sources-links">
                 {mainVideo.bioguideId ? (
-                  <a href={`https://www.congress.gov/member/${mainVideo.bioguideId}`} target="_blank" rel="noopener noreferrer" className="source-link">
+                  <a href={`https://www.congress.gov/member/${(mainVideo.fullName || '').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '')}/${mainVideo.bioguideId}`} target="_blank" rel="noopener noreferrer" className="source-link">
                     {mainVideo.fullName || 'Politician'} — Congress.gov Profile ↗
                   </a>
                 ) : null}
