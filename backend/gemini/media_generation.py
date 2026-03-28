@@ -485,6 +485,7 @@ def generate_citation_image(
 ) -> dict[str, Any]:
     """Generate a bill citation card image using Nano Banana 2 (Gemini image generation).
 
+    Retries up to 3 times on empty responses (intermittent API issue).
     Falls back to placeholder when provider is disabled or API key is missing.
     """
     output = Path(output_path)
@@ -502,59 +503,75 @@ def generate_citation_image(
     model = os.getenv("IMAGE_GEN_MODEL", "gemini-3.1-flash-image-preview")
     endpoint = f"{base}/models/{model}:generateContent"
 
-    payload = {
-        "contents": [{"parts": [{"text": prompt}]}],
-        "generationConfig": {
-            "responseModalities": ["IMAGE"],
-        },
-    }
+    max_retries = 3
+    last_error: str | None = None
 
-    try:
-        resp = requests.post(
-            endpoint,
-            params={"key": api_key},
-            headers={"Content-Type": "application/json"},
-            json=payload,
-            timeout=120,
-        )
-        resp.raise_for_status()
-        data = _json_response(resp)
+    for attempt in range(max_retries):
+        # Sanitize prompt to remove real people's names — the image model
+        # rejects prompts with real names/likenesses just like Veo does.
+        sanitized_prompt = _sanitize_prompt_for_veo(prompt)
 
-        candidates = data.get("candidates", [])
-        for candidate in candidates:
-            parts = candidate.get("content", {}).get("parts", [])
-            for part in parts:
-                inline_data = part.get("inlineData") or part.get("inline_data") or {}
-                b64 = inline_data.get("data", "")
-                if b64:
-                    image_bytes = base64.b64decode(b64)
-                    # Always trust magic bytes over API-reported mimeType
-                    if image_bytes[:2] == b'\xff\xd8':
-                        output = output.with_suffix(".jpg")
-                    elif image_bytes[:4] == b'\x89PNG':
-                        output = output.with_suffix(".png")
-                    else:
-                        # Unknown format — keep original extension
-                        pass
-                    # Remove stale file if extension changed (e.g. .png -> .jpg)
-                    requested = Path(output_path)
-                    if requested != output and requested.exists():
-                        requested.unlink(missing_ok=True)
-                    output.write_bytes(image_bytes)
-                    return {
-                        "path": str(output),
-                        "file_size_bytes": output.stat().st_size,
-                        "provider": f"nano-banana:{model}",
-                    }
+        payload = {
+            "contents": [{"parts": [{"text": sanitized_prompt}]}],
+            "generationConfig": {
+                "responseModalities": ["IMAGE"],
+            },
+        }
 
-        result = _generate_placeholder_image(output)
-        result["error"] = "No image data in API response"
-        return result
+        try:
+            resp = requests.post(
+                endpoint,
+                params={"key": api_key},
+                headers={"Content-Type": "application/json"},
+                json=payload,
+                timeout=120,
+            )
+            resp.raise_for_status()
+            data = _json_response(resp)
 
-    except Exception as exc:
-        result = _generate_placeholder_image(output)
-        result["error"] = str(exc)
-        return result
+            candidates = data.get("candidates", [])
+            for candidate in candidates:
+                parts = candidate.get("content", {}).get("parts", [])
+                for part in parts:
+                    inline_data = part.get("inlineData") or part.get("inline_data") or {}
+                    b64 = inline_data.get("data", "")
+                    if b64:
+                        image_bytes = base64.b64decode(b64)
+                        # Always trust magic bytes over API-reported mimeType
+                        if image_bytes[:2] == b'\xff\xd8':
+                            output = output.with_suffix(".jpg")
+                        elif image_bytes[:4] == b'\x89PNG':
+                            output = output.with_suffix(".png")
+                        else:
+                            # Unknown format — keep original extension
+                            pass
+                        # Remove stale file if extension changed (e.g. .png -> .jpg)
+                        requested = Path(output_path)
+                        if requested != output and requested.exists():
+                            requested.unlink(missing_ok=True)
+                        output.write_bytes(image_bytes)
+                        return {
+                            "path": str(output),
+                            "file_size_bytes": output.stat().st_size,
+                            "provider": f"nano-banana:{model}",
+                        }
+
+            # No image data — log details for diagnosis
+            finish_reasons = [
+                c.get("finishReason", "unknown") for c in candidates
+            ]
+            last_error = f"No image data in API response (attempt {attempt+1}/{max_retries}, finishReasons={finish_reasons})"
+
+        except Exception as exc:
+            last_error = f"API error attempt {attempt+1}/{max_retries}: {exc}"
+
+        # Wait before retry (increasing backoff)
+        if attempt < max_retries - 1:
+            time.sleep(3 * (attempt + 1))
+
+    result = _generate_placeholder_image(output)
+    result["error"] = last_error
+    return result
 
 
 def _download_to_file(

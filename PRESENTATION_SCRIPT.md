@@ -1,70 +1,89 @@
-# House Advantage — 3-Minute Presentation Script
+# House Advantage — 3-Minute Demo Script
 
 ---
 
-**[SLIDE / SCREEN: Landing page at `/`]**
+**[SCREEN: Browser open to home page `/`]**
 
-Hey everyone — this is **House Advantage**, a civic-tech platform that automatically detects, investigates, and broadcasts statistically anomalous stock trades made by members of Congress.
+Hey everyone — this is **House Advantage**. It's a civic-tech platform that automatically detects, investigates, and broadcasts statistically anomalous stock trades made by members of Congress.
 
-The core idea is simple: congressional representatives are required to disclose their stock trades, but nobody has the time to comb through thousands of filings and figure out which ones are suspicious. That's where we come in.
-
----
-
-**[SLIDE / SCREEN: Explain the ML pipeline briefly]**
-
-Under the hood, we run every disclosed trade through **two machine-learning models**. The first is a **Cohort Model**, trained exclusively on congressional trading patterns. The second is a **Baseline Model**, trained on SEC 13-F filings from institutional fund managers — basically, normal professional investors.
-
-By comparing a trade against both benchmarks, we classify it into one of **four severity quadrants**:
-
-- **SEVERE** — abnormal compared to *both* Congress and the public. These are the big red flags.
-- **SYSTEMIC** — looks normal within Congress, but wildly different from how regular investors trade. This is actually the most powerful civic insight — it means the *entire body* is trading in a way outsiders don't.
-- **OUTLIER** — unusual within Congress, but trades like a normal investor. Interesting, but less concerning.
-- **UNREMARKABLE** — normal on both measures. Nothing to see here.
+Members of Congress are required to disclose their stock trades, but nobody has time to comb through thousands of filings and figure out which ones are suspicious. House Advantage does that automatically — end to end.
 
 ---
 
-**[SCREEN: Home page — main video player + severe case tiles]**
+**[SCREEN: Point to the navigation bar at the top]**
 
-So let me walk you through the app. When you land on the **home page**, front and center is a **daily AI-generated video report**. Every day our pipeline chains **Gemini 2.5 Pro** for script writing, **Google Text-to-Speech** for narration, and **Veo 3.1** for video generation. The result is a fully automated news broadcast summarizing the day's most suspicious trades — no human editing required.
-
-Below the main player, you'll see a **grid of severe case video tiles**. Each tile represents an individual trade flagged as SEVERE. You can see the politician's name, the ticker they traded, the date, and the severity label. **Clicking any tile** swaps it into the main player so you can watch that specific deep-dive. There's also a "Reset to Daily" button to jump back to the full summary. The tiles are paginated so you can browse through all flagged trades.
-
-Above the video, we show **daily stats** — the report date, whether narration and video are ready, and the pipeline status.
+Up top you can see the navigation. We have two main sections — **Daily**, which is the home page, and **Politicians**, which is the research tool. Let's start with what you see when you first land on the site.
 
 ---
 
-**[SCREEN: Navigate to `/politicians`]**
+**[SCREEN: Home page — focus on the main video player]**
 
-Now let's hop over to the **Politicians** page. This is designed for journalists and watchdog organizations who want to dig into a specific member of Congress.
+Front and center is an **AI-generated daily video report**. Every day, our pipeline scores all newly disclosed trades through two machine-learning models, then chains **Gemini 2.5 Pro** for script writing, **Google Cloud Text-to-Speech** for narration, and **Veo 3.1** for video generation. The result is a fully automated investigative news broadcast — zero human editing.
 
-At the top is a **search bar** — you can type in a name, state, or bioguide ID and results appear instantly with debounced search. Results show up as cards with the politician's name, party, state, and chamber.
-
----
-
-**[SCREEN: Click a politician card to expand their profile]**
-
-When you click a politician, their **full profile** expands inline. At the top you get aggregate stats: total number of trades, how many were flagged SEVERE, how many were SYSTEMIC, and their average anomaly scores across both models.
-
-Below that is a **detailed trade table**. Each row shows the trade date, ticker, transaction type, and dollar amount. But the really interesting columns are on the right side:
-
-- There's an inline **SVG sparkline chart** showing 30 days of stock price movement around the trade date, with a red marker on the exact day the trade happened. So you can instantly see — did they buy right before a spike? Sell right before a crash?
-
-- Next to that is the **anomaly score** — a visual progress bar from 0 to 100 with a color gradient from green to red, plus a breakdown of the cohort and baseline scores.
-
-- Then there's the **severity quadrant pill** — color-coded so SEVERE is red, SYSTEMIC is orange, and so on.
-
-- And finally, if our **Gemini Contextualizer** has investigated the trade, you get an inline report right in the table — a headline, risk assessment, narrative explanation, relevant bill excerpts, a disclaimer, and up to three pieces of supporting evidence. This is the AI telling you *why* this trade might matter: what legislation was on the floor, what committees the politician sits on, and whether there's a plausible information advantage.
+Right below the video you can see **daily stats chips** showing the report date, pipeline status, and whether narration and video generation completed successfully.
 
 ---
 
-**[SCREEN: Scroll through a few examples]**
+**[SCREEN: Scroll down to the Severe Case Focus grid]**
 
-So to recap — **House Advantage** is a fully automated pipeline from data ingestion to ML scoring to AI-generated video news. It serves three audiences: the **general public** gets daily video reports they can watch passively, **journalists** get a searchable database with deep contextual analysis, and **watchdog organizations** get politician rankings and anomaly breakdowns.
+Below that is the **Severe Case Focus** panel. This is a paginated grid of video tiles — one for each individual trade our models flagged as **SEVERE**, meaning statistically anomalous compared to both Congress *and* normal professional investors. Each tile shows the politician's name, the ticker, the trade date, and the severity label.
 
-The entire backend is a **FastAPI** server with a **PostgreSQL** database, the frontend is built in **Next.js 15**, and the media pipeline runs on **Google Cloud** with GCS storage. Everything from data collection to video production is automated — the goal is zero human intervention for daily operation.
+**[ACTION: Click one of the severe case tiles]**
 
-Thanks for watching — that's House Advantage.
+When I click a tile, it swaps into the main player up top so I can watch that specific deep-dive video. And notice what appears underneath the video now — a **Sources & Context** panel.
 
 ---
 
-*Approximate runtime: ~3 minutes at natural speaking pace.*
+**[SCREEN: Focus on the Sources & Context panel beneath the video]**
+
+This is pulled directly from our **Gemini Contextualizer** — the AI that investigated this trade. You can see the **narrative** explaining why the trade was flagged, **key factor tags** showing which anomaly signals drove the score — things like cohort index, baseline index, bill proximity, and committee relevance.
+
+If the trade overlaps with active legislation, you get a **Bill Reference** section with the excerpt and — importantly — **hyperlinked citations** that take you directly to the bill on Congress.gov. There's also a direct link to the **politician's Congress.gov profile** and a link to the **stock's financial data** on Google Finance. Every claim is sourced, every link opens in a new tab. At the bottom is the automated **disclaimer** noting this is anomaly scoring, not a legal determination.
+
+**[ACTION: Click "Reset to Daily" to go back to the summary video]**
+
+I can always click "Reset to Daily" to jump back to the full summary broadcast.
+
+---
+
+**[ACTION: Click "Politicians" in the top nav]**
+
+Now let's look at the **Politicians** page. This is designed for journalists and watchdog organizations who want to investigate a specific member.
+
+**[ACTION: Type a name into the search bar]**
+
+There's a **search bar** at the top — I can type a name or state and results appear instantly with debounced search. They show up as cards with name, party, state, and chamber. The results are paginated if there are many matches.
+
+**[ACTION: Click a politician card]**
+
+When I click a politician, their full profile expands inline. At the top are **aggregate stats**: total trades, how many were flagged SEVERE, how many SYSTEMIC, and their average anomaly scores across both models.
+
+---
+
+**[SCREEN: Focus on the trade table]**
+
+Below that is the **trade table** — and this is where it gets interesting. Each row has the trade date, ticker, type, and dollar amount. But the three columns on the right are the core of the analysis:
+
+First, an inline **sparkline chart** — that's an SVG rendering of 30 days of stock price around the trade date, with a red vertical marker on the exact day the trade happened. So you can instantly see if they bought right before a spike or sold right before a crash.
+
+Next to that is the **anomaly score** — a gradient progress bar from 0 to 100 with the cohort and baseline breakdowns shown underneath.
+
+Then there's the **severity quadrant pill** — color-coded red for SEVERE, orange for SYSTEMIC, yellow for OUTLIER, green for UNREMARKABLE.
+
+---
+
+**[SCREEN: Focus on the Contextualizer column in the table]**
+
+And finally, the last column — the **Contextualizer**. If Gemini has investigated this trade, you get the full inline report: a headline, the risk level, the AI's narrative explanation, relevant bill excerpts, evidence factors, and the disclaimer. This is the AI telling you *why* this trade matters — what legislation was on the floor, what committees the politician sits on, and whether there's a plausible information advantage.
+
+---
+
+**[SCREEN: Pull back to show the full app]**
+
+So that's House Advantage. A fully automated pipeline — data ingestion, dual-model ML scoring, Gemini contextual investigation, AI video generation — all running daily with zero human intervention. The frontend is built in **Next.js 15**, the backend is **FastAPI** with a **MySQL** database, and media assets are stored in **Google Cloud Storage**. Every source is hyperlinked. Every video is AI-generated. And it runs itself, every single day.
+
+Thanks for watching.
+
+---
+
+*Approximate runtime: ~3 minutes at natural speaking pace (~150 words/min).*

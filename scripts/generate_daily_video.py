@@ -340,6 +340,7 @@ def main() -> None:
         for idx, prompt in enumerate(citation_prompts[:3]):
             img_path = CITATION_DIR / f"daily_{report_date.isoformat()}_citation_{idx}.png"
             log(f"  Generating citation {idx+1}/{min(len(citation_prompts), 3)}...")
+            log(f"    Prompt: \"{prompt[:120]}...\"" if len(prompt) > 120 else f"    Prompt: \"{prompt}\"")
             t0 = time.time()
             meta = generate_citation_image(
                 prompt=prompt,
@@ -352,7 +353,13 @@ def main() -> None:
             log(f"    -> {Path(actual_path).name} ({size_kb:.1f} KB, {elapsed:.1f}s, {provider})")
             if meta.get("error"):
                 log(f"    WARNING: {meta['error']}")
-            citation_paths.append(actual_path)
+            # Only include real images (>1 KB), skip tiny placeholders
+            if size_kb > 1.0:
+                citation_paths.append(actual_path)
+            else:
+                log(f"    SKIPPED: image too small ({size_kb:.1f} KB), likely placeholder")
+
+    log(f"  Usable citation images: {len(citation_paths)}")
 
     # -- Stage 4: TTS narration --
     section("Stage 4: Synthesizing TTS narration")
