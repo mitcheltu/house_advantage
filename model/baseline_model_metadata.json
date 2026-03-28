@@ -1,0 +1,32 @@
+{
+  "model_name": "baseline_model",
+  "model_version": "1.0.0",
+  "trained_at": "2026-03-24T10:51:41.361111Z",
+  "sklearn_version": "1.5.2",
+  "training_population": "SEC 13-F institutional fund managers",
+  "n_training_samples": 33452,
+  "training_date_range": {
+    "start": "2023-03-31",
+    "end": "2025-09-30"
+  },
+  "features": [
+    "cohort_alpha",
+    "proximity_days",
+    "has_proximity_data",
+    "committee_relevance",
+    "disclosure_lag"
+  ],
+  "hyperparameters": {
+    "n_estimators": 200,
+    "contamination": "auto",
+    "random_state": 42
+  },
+  "design_note": "Features 2-4 are fixed constants for all training samples. The model learns the normal distribution of cohort_alpha for institutional investors with no legislative access.",
+  "training_stats": {
+    "outlier_pct": 14.47,
+    "score_min": -0.3171,
+    "score_max": 0.1072,
+    "score_mean": 0.0542,
+    "score_std": 0.0715
+  }
+}

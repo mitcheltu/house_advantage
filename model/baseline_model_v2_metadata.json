@@ -1,0 +1,38 @@
+{
+  "model_name": "baseline_model_v2",
+  "model_version": "2.0.0",
+  "trained_at": "2026-03-25T01:28:24.928505Z",
+  "sklearn_version": "1.5.2",
+  "training_population": "SEC 13-F institutional fund managers",
+  "n_training_samples": 33452,
+  "n_features": 9,
+  "features": [
+    "cohort_alpha",
+    "pre_trade_alpha",
+    "proximity_days",
+    "bill_proximity",
+    "has_proximity_data",
+    "committee_relevance",
+    "amount_zscore",
+    "cluster_score",
+    "disclosure_lag"
+  ],
+  "changes_from_v1": [
+    "Added pre_trade_alpha (computed for institutional trades)",
+    "Added bill_proximity, amount_zscore, cluster_score (fixed at neutral values)",
+    "Changed disclosure_lag from 0 to log1p(0)=0.0"
+  ],
+  "design_note": "Only cohort_alpha and pre_trade_alpha carry signal. Other features are fixed at neutral values representing institutional investors with no legislative access.",
+  "hyperparameters": {
+    "n_estimators": 200,
+    "contamination": "auto",
+    "random_state": 42
+  },
+  "training_stats": {
+    "outlier_pct": 11.94,
+    "score_min": -0.3063,
+    "score_max": 0.1399,
+    "score_mean": 0.0791,
+    "score_std": 0.07
+  }
+}

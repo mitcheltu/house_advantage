@@ -1,0 +1,39 @@
+{
+  "model_name": "cohort_model_v2",
+  "model_version": "2.0.0",
+  "trained_at": "2026-03-25T01:24:26.893932Z",
+  "sklearn_version": "1.5.2",
+  "training_population": "Congressional STOCK Act disclosures",
+  "n_training_samples": 9720,
+  "n_features": 9,
+  "features": [
+    "cohort_alpha",
+    "pre_trade_alpha",
+    "proximity_days",
+    "bill_proximity",
+    "has_proximity_data",
+    "committee_relevance",
+    "amount_zscore",
+    "cluster_score",
+    "disclosure_lag"
+  ],
+  "changes_from_v1": [
+    "Added pre_trade_alpha (5-day pre-trade excess return)",
+    "Added bill_proximity (sector-matched legislative timing)",
+    "Added amount_zscore (personal trade-size anomaly)",
+    "Added cluster_score (concurrent politician trading)",
+    "Changed disclosure_lag from raw days to log1p(days)"
+  ],
+  "hyperparameters": {
+    "n_estimators": 200,
+    "contamination": "auto",
+    "random_state": 42
+  },
+  "training_stats": {
+    "outlier_pct": 9.31,
+    "score_min": -0.1967,
+    "score_max": 0.1552,
+    "score_mean": 0.0812,
+    "score_std": 0.056
+  }
+}

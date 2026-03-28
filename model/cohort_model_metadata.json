@@ -1,0 +1,32 @@
+{
+  "model_name": "cohort_model",
+  "model_version": "1.0.0",
+  "trained_at": "2026-03-24T10:21:32.592509Z",
+  "sklearn_version": "1.5.2",
+  "training_population": "Congressional STOCK Act disclosures",
+  "n_training_samples": 9573,
+  "training_date_range": {
+    "start": "2017-01-05",
+    "end": "2026-02-09"
+  },
+  "features": [
+    "cohort_alpha",
+    "proximity_days",
+    "has_proximity_data",
+    "committee_relevance",
+    "disclosure_lag"
+  ],
+  "hyperparameters": {
+    "n_estimators": 200,
+    "contamination": "auto",
+    "random_state": 42
+  },
+  "training_stats": {
+    "outlier_pct": 18.5,
+    "score_min": -0.2552,
+    "score_max": 0.1372,
+    "score_mean": 0.0482,
+    "score_std": 0.0719
+  },
+  "known_limitation": "Baseline is congressional trading cohort, which may itself reflect systematic information advantages. A low score indicates 'normal for Congress', not 'clean in absolute terms'."
+}
