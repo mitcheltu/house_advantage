@@ -241,6 +241,119 @@ def _create_tts_client() -> tuple[Any | None, str | None]:
             os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = original
 
 
+def _synthesize_with_gemini_tts(script_text: str, output: Path) -> tuple[dict[str, Any] | None, str | None]:
+    api_key = os.getenv("GEMINI_API_KEY", "").strip()
+    if not api_key:
+        return None, "GEMINI_API_KEY not set"
+
+    base = os.getenv("GEMINI_API_BASE", "https://generativelanguage.googleapis.com/v1beta").rstrip("/")
+    model = os.getenv("TTS_GEMINI_MODEL", "gemini-2.5-pro-preview-tts")
+    voice_name = os.getenv("TTS_GEMINI_VOICE", "Kore")
+
+    endpoint = f"{base}/models/{model}:generateContent"
+
+    payload_variants = [
+        {
+            "contents": [{"parts": [{"text": script_text}]}],
+            "generationConfig": {
+                "responseModalities": ["AUDIO"],
+                "speechConfig": {
+                    "voiceConfig": {
+                        "prebuiltVoiceConfig": {
+                            "voiceName": voice_name,
+                        }
+                    }
+                },
+            },
+        },
+        {
+            "contents": [{"parts": [{"text": script_text}]}],
+            "generationConfig": {
+                "responseMimeType": "audio/wav",
+                "responseModalities": ["AUDIO"],
+            },
+        },
+    ]
+
+    last_error = None
+    for payload in payload_variants:
+        try:
+            resp = requests.post(
+                endpoint,
+                params={"key": api_key},
+                headers={"Content-Type": "application/json"},
+                json=payload,
+                timeout=180,
+            )
+            resp.raise_for_status()
+            data = _json_response(resp)
+
+            part = _extract_first(
+                data,
+                _env_csv(
+                    "TTS_GEMINI_AUDIO_PART_PATHS",
+                    "candidates.0.content.parts.0,audio",
+                ),
+            )
+
+            part_dict = part if isinstance(part, dict) else {}
+            inline_data = part_dict.get("inlineData") if isinstance(part_dict.get("inlineData"), dict) else part_dict.get("inline_data")
+            inline_data = inline_data if isinstance(inline_data, dict) else {}
+            mime_type = str(inline_data.get("mimeType") or inline_data.get("mime_type") or "").strip().lower()
+
+            audio_b64 = _extract_first(
+                data,
+                _env_csv(
+                    "TTS_GEMINI_AUDIO_BASE64_PATHS",
+                    "candidates.0.content.parts.0.inlineData.data,candidates.0.content.parts.0.inline_data.data,audio.data",
+                ),
+            )
+            if not audio_b64:
+                last_error = f"Gemini TTS response did not contain audio data keys={list(data.keys())}"
+                continue
+
+            audio_bytes = base64.b64decode(str(audio_b64))
+            output.parent.mkdir(parents=True, exist_ok=True)
+
+            # Gemini TTS commonly returns raw PCM in audio/L16 format.
+            if "audio/l16" in mime_type or "audio/pcm" in mime_type:
+                sample_rate = 24000
+                channels = int(os.getenv("TTS_GEMINI_PCM_CHANNELS", "1"))
+
+                # Parse simple mime params like: audio/L16;codec=pcm;rate=24000
+                for token in mime_type.split(";"):
+                    token = token.strip()
+                    if token.startswith("rate="):
+                        try:
+                            sample_rate = int(token.split("=", 1)[1])
+                        except Exception:
+                            pass
+                    if token.startswith("channels="):
+                        try:
+                            channels = max(1, int(token.split("=", 1)[1]))
+                        except Exception:
+                            pass
+
+                with wave.open(str(output), "wb") as wf:
+                    wf.setnchannels(channels)
+                    wf.setsampwidth(2)
+                    wf.setframerate(sample_rate)
+                    wf.writeframes(audio_bytes)
+            else:
+                output.write_bytes(audio_bytes)
+
+            return {
+                "path": str(output),
+                "duration_seconds": _probe_duration(output),
+                "file_size_bytes": output.stat().st_size if output.exists() else None,
+                "provider": f"gemini-tts:{model}",
+            }, None
+        except Exception as exc:
+            last_error = str(exc)
+
+    return None, last_error
+
+
 def synthesize_narration_audio(script_text: str, output_path: str) -> dict[str, Any]:
     output = Path(output_path)
     output.parent.mkdir(parents=True, exist_ok=True)
@@ -248,6 +361,18 @@ def synthesize_narration_audio(script_text: str, output_path: str) -> dict[str, 
     language_code = os.getenv("TTS_LANGUAGE_CODE", "en-US")
     voice_name = os.getenv("TTS_VOICE_NAME", "en-US-Neural2-F")
     speaking_rate = float(os.getenv("TTS_SPEAKING_RATE", "1.0"))
+
+    provider_mode = os.getenv("TTS_PROVIDER", "auto").strip().lower()
+
+    # Gemini TTS path (requested by user)
+    if provider_mode in {"gemini", "auto"}:
+        gemini_result, gemini_error = _synthesize_with_gemini_tts(script_text=script_text, output=output)
+        if gemini_result is not None:
+            return gemini_result
+        if provider_mode == "gemini" and gemini_error:
+            fallback = _generate_silent_wav(output, _estimate_duration_seconds(script_text))
+            fallback["error"] = gemini_error
+            return fallback
 
     tts_client_error: str | None = None
     client, tts_client_error = _create_tts_client()

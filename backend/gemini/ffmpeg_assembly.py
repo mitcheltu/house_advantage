@@ -59,18 +59,32 @@ def assemble_video_with_audio(
     overwrite: bool = True,
 ) -> dict[str, Any]:
     ffmpeg_bin = _resolve_ffmpeg_bin()
-    video = ffmpeg.input(video_path)
+    video_duration = _probe_duration(Path(video_path))
+    audio_duration = _probe_duration(Path(audio_path))
+
+    # Keep final runtime aligned to narration whenever available.
+    target_duration = audio_duration or video_duration
+
+    # If generated video is shorter than narration (common with capped model durations),
+    # loop the video stream so the narration is not cut off.
+    if video_duration and audio_duration and audio_duration > video_duration:
+        video = ffmpeg.input(video_path, stream_loop=-1)
+    else:
+        video = ffmpeg.input(video_path)
+
     audio = ffmpeg.input(audio_path)
 
-    out = ffmpeg.output(
-        video.video,
-        audio.audio,
-        output_path,
-        shortest=None,
-        vcodec="copy",
-        acodec="aac",
-        audio_bitrate="192k",
-    )
+    output_kwargs: dict[str, Any] = {
+        "vcodec": "libx264",
+        "pix_fmt": "yuv420p",
+        "acodec": "aac",
+        "audio_bitrate": "192k",
+        "movflags": "+faststart",
+    }
+    if target_duration:
+        output_kwargs["t"] = float(target_duration)
+
+    out = ffmpeg.output(video.video, audio.audio, output_path, **output_kwargs)
 
     if overwrite:
         out = out.overwrite_output()
