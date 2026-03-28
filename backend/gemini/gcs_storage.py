@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from datetime import timedelta
 from pathlib import Path
 from typing import Any, Optional
+from urllib.parse import urlparse
 
 try:
     from google.cloud import storage as _storage
@@ -86,6 +87,21 @@ def _parse_gs_url(url: str) -> tuple[str, str] | None:
     return parts[0], parts[1]
 
 
+def _parse_https_gcs_url(url: str) -> tuple[str, str] | None:
+    parsed = urlparse(url)
+    if parsed.scheme not in {"http", "https"}:
+        return None
+    if parsed.netloc not in {"storage.googleapis.com", "storage.cloud.google.com"}:
+        return None
+    if parsed.query and "X-Goog-Signature" in parsed.query:
+        return None
+    path = parsed.path.lstrip("/")
+    parts = path.split("/", 1)
+    if len(parts) != 2:
+        return None
+    return parts[0], parts[1]
+
+
 def resolve_media_url(url: str) -> str:
     """Return a public or signed HTTPS URL if input is gs://. Otherwise return original."""
     cfg = _get_config()
@@ -93,6 +109,8 @@ def resolve_media_url(url: str) -> str:
         return url
 
     parsed = _parse_gs_url(url)
+    if not parsed:
+        parsed = _parse_https_gcs_url(url)
     if not parsed:
         return url
 

@@ -10,6 +10,11 @@ function selectVideoAsset(mediaAssets) {
   );
 }
 
+function buildSevereCaseUrl(tradeId) {
+  if (!tradeId) return null;
+  return `https://storage.googleapis.com/house-advantage/media/severe-cases/trade_${tradeId}_final.mp4`;
+}
+
 export default async function HomePage() {
   let dailyReport = null;
   let severeVideos = [];
@@ -28,10 +33,11 @@ export default async function HomePage() {
       severeItems.map(async (item) => {
         const audit = await fetchTradeAudit(item.trade_id).catch(() => null);
         const videoAsset = selectVideoAsset(audit?.media_assets || []);
+        const fallbackUrl = buildSevereCaseUrl(item.trade_id);
         return {
           ...item,
           audit_headline: audit?.audit_report?.headline || null,
-          video_url: videoAsset?.storage_url || null,
+          video_url: videoAsset?.storage_url || fallbackUrl,
           video_duration: videoAsset?.duration_seconds || null,
         };
       })
