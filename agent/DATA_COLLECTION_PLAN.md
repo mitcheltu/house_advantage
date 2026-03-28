@@ -175,7 +175,7 @@ Senate trades are scraped from the eFD DataTables AJAX API.
 
 ## Sector Mapping
 
-Tickers are mapped to sectors using a static lookup table. Sectors align with congressional committee jurisdictions:
+Tickers are mapped to sectors using a static lookup table (`data/raw/_combined_sector_map.json`, ~963 tickers). Sectors align with congressional committee jurisdictions:
 
 | Sector | Example Tickers | Relevant Committees |
 |--------|----------------|---------------------|
@@ -186,3 +186,5 @@ Tickers are mapped to sectors using a static lookup table. Sectors align with co
 | tech | AAPL, MSFT, GOOGL, NVDA | Science & Technology, Commerce |
 | telecom | T, VZ | Commerce, Communications |
 | agriculture | ADM, DE, MOS | Agriculture |
+
+**Multi-sector support:** 33 tickers carry multi-sector lists (e.g. MSFT → ["tech", "defense"], GE → ["defense", "energy", "healthcare"]). Multi-sector data is normalised in the `trade_sectors` junction table `(trade_id, sector)` — ~9,931 rows, 1,248 trades have multiple sectors. The `_parse_sector()` helper in `dual_scorer.py` handles all DB string formats at read time.

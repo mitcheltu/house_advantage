@@ -2,6 +2,7 @@ from fastapi import APIRouter, Query
 from sqlalchemy import text
 
 from backend.db.connection import get_engine
+from backend.scoring.dual_scorer import _parse_sector
 
 router = APIRouter(prefix="/api/v1", tags=["systemic"])
 
@@ -109,7 +110,7 @@ def get_leaderboard(
         total_row = conn.execute(count_sql, {k: v for k, v in params.items() if k == "quadrant"}).mappings().first()
 
     return {
-        "items": [dict(r) for r in rows],
+        "items": [{**dict(r), "sectors": _parse_sector(r.get("industry_sector"))} for r in rows],
         "pagination": {
             "limit": limit,
             "offset": offset,

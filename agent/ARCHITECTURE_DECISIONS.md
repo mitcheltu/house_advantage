@@ -31,9 +31,10 @@
 ### 5. Sector Mapping Strategy
 
 **Decision:** Use a static ticker→sector lookup table, expanded via yfinance batch lookups  
-**Reason:** MVP scope — covers ~170 most-traded congressional tickers (45.7% of trades). Initially was ~50 tickers (25% coverage). Expanded in March 2026 using `yfinance.Ticker(symbol).info['sector']` to auto-classify GICS sectors into 7 model categories.  
+**Reason:** MVP scope — covers ~963 most-traded congressional tickers (45.7%+ of trades). Initially was ~50 tickers (25% coverage). Expanded in March 2026 using `yfinance.Ticker(symbol).info['sector']` to auto-classify GICS sectors into 7 model categories.  
 **Mapping:** GICS sectors → {defense, finance, healthcare, energy, tech, telecom, agriculture}  
 **Cache:** Full yfinance results in `backend/data/raw/ticker_sector_lookup.json`  
+**Multi-sector (July 2025):** 33 tickers have multi-sector lists in `_combined_sector_map.json`. A `trade_sectors` junction table `(trade_id, sector)` stores normalised multi-sector data. The `_parse_sector()` helper in `dual_scorer.py` handles all DB string formats at read time. API routers return `sectors: [...]` arrays. `POLICY_AREA_SECTOR_MAP` (27 entries) and `BILL_SECTOR_MAP` (27 entries) were cleaned and synced.  
 **V2:** Can add dynamic classification via SIC codes, GICS database, or OpenFIGI.
 
 ### 6. Vote Collection Split (March 2026)

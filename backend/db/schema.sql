@@ -96,6 +96,17 @@ CREATE TABLE IF NOT EXISTS trades (
 ) ENGINE=InnoDB;
 
 -- ============================================================
+-- 4b. TRADE SECTORS (junction table for multi-sector support)
+-- ============================================================
+CREATE TABLE IF NOT EXISTS trade_sectors (
+    trade_id  INT          NOT NULL,
+    sector    VARCHAR(50)  NOT NULL,
+    PRIMARY KEY (trade_id, sector),
+    FOREIGN KEY (trade_id) REFERENCES trades(id) ON DELETE CASCADE,
+    INDEX idx_sector (sector)
+) ENGINE=InnoDB;
+
+-- ============================================================
 -- 5. VOTES (roll call votes from Congress.gov)
 -- ============================================================
 CREATE TABLE IF NOT EXISTS votes (

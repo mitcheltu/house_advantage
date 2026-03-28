@@ -68,9 +68,19 @@ For the `industry_sector` field in congressional trades, we use **yfinance** to 
 
 - API: `yfinance.Ticker(symbol).info['sector']` → maps to one of 7 model sectors
 - Mapping: GICS sectors → model sectors (defense, finance, healthcare, energy, tech, telecom, agriculture)
-- Coverage: ~170 tickers mapped, covering 45.7% of congressional trades
+- Coverage: ~963 tickers mapped (expanded from ~170); covering 45.7%+ of congressional trades
 - Full lookup results cached in `backend/data/raw/ticker_sector_lookup.json`
 - Static mapping lives in `TICKER_SECTOR_MAP` dict in `merge_trades.py`
+- Combined map with multi-sector lists: `data/raw/_combined_sector_map.json` (33 tickers have multi-sector arrays)
+
+### Multi-Sector Infrastructure (July 2025)
+
+- **`_parse_sector()` helper** (`backend/scoring/dual_scorer.py`): Normalises any DB sector value (None, NaN, JSON array, Python repr list, plain string) into a clean `list[str]`. Used at every read point: scorer, contextualizer, all API routers.
+- **`trade_sectors` junction table**: `(trade_id INT, sector VARCHAR(50))` with composite PK. Populated from `_combined_sector_map.json` via `backend/db/migrate_trade_sectors.py`. ~9,931 rows; 1,248 trades have multiple sectors.
+- **API serialization**: All API routers now return a `sectors: [...]` array alongside the legacy `industry_sector` string field.
+- **CSV serialization**: `merge_trades.py` uses `json.dumps()` for list sector values so CSVs contain valid JSON strings instead of Python repr.
+- **`POLICY_AREA_SECTOR_MAP`** in `collect_congress_gov.py`: Cleaned from 32 → 27 entries (removed bad mappings like "Sports"→telecom).
+- **`BILL_SECTOR_MAP`** in `dual_scorer.py`: Expanded from 12 → 27 entries to match `POLICY_AREA_SECTOR_MAP`.
 
 ---
 

@@ -2,6 +2,7 @@ from fastapi import APIRouter, HTTPException, Query
 from sqlalchemy import text
 
 from backend.db.connection import get_engine
+from backend.scoring.dual_scorer import _parse_sector
 
 router = APIRouter(prefix="/api/v1", tags=["politicians"])
 
@@ -91,5 +92,5 @@ def get_politician(politician_id: str, limit: int = Query(default=50, ge=1, le=2
             "avg_cohort_index": float(aggregate["avg_cohort"] or 0.0),
             "avg_baseline_index": float(aggregate["avg_baseline"] or 0.0),
         },
-        "trades": [dict(t) for t in trades],
+        "trades": [{**dict(t), "sectors": _parse_sector(t.get("industry_sector"))} for t in trades],
     }
