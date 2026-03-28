@@ -8,9 +8,12 @@ import os
 from dataclasses import dataclass
 from datetime import timedelta
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
-from google.cloud import storage
+try:
+    from google.cloud import storage as _storage
+except ImportError:
+    _storage = None  # type: ignore[assignment]
 
 
 logger = logging.getLogger(__name__)
@@ -34,11 +37,13 @@ def _get_config() -> GcsConfig | None:
 
 
 def gcs_enabled() -> bool:
-    return _get_config() is not None
+    return _get_config() is not None and _storage is not None
 
 
-def _client() -> storage.Client:
-    return storage.Client()
+def _client() -> Any:
+    if _storage is None:
+        raise RuntimeError("google-cloud-storage package is not installed")
+    return _storage.Client()
 
 
 def _guess_content_type(path: str) -> str | None:

@@ -1,7 +1,7 @@
 {
   "model_name": "cohort_model_v2",
   "model_version": "2.0.0",
-  "trained_at": "2026-03-25T01:24:26.893932Z",
+  "trained_at": "2026-03-28T13:27:54.788081Z",
   "sklearn_version": "1.5.2",
   "training_population": "Congressional STOCK Act disclosures",
   "n_training_samples": 9720,
@@ -30,10 +30,10 @@
     "random_state": 42
   },
   "training_stats": {
-    "outlier_pct": 9.31,
-    "score_min": -0.1967,
-    "score_max": 0.1552,
-    "score_mean": 0.0812,
-    "score_std": 0.056
+    "outlier_pct": 12.03,
+    "score_min": -0.2252,
+    "score_max": 0.1505,
+    "score_mean": 0.0736,
+    "score_std": 0.0607
   }
 }

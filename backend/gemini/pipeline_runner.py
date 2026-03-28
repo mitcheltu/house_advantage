@@ -50,14 +50,15 @@ def _fetch_severe_trade_ids_for_date(report_date: date, limit: int = 100) -> lis
         SELECT t.id AS trade_id
         FROM trades t
         JOIN anomaly_scores a ON a.trade_id = t.id
-        WHERE t.trade_date = :report_date
-          AND a.severity_quadrant = 'SEVERE'
+        JOIN audit_reports ar ON ar.trade_id = t.id
+        WHERE a.severity_quadrant = 'SEVERE'
+          AND ar.video_prompt IS NOT NULL
         ORDER BY GREATEST(a.cohort_index, a.baseline_index) DESC
         LIMIT :limit
         """
     )
     with engine.connect() as conn:
-        rows = conn.execute(sql, {"report_date": report_date, "limit": limit}).mappings().all()
+        rows = conn.execute(sql, {"limit": limit}).mappings().all()
     return [int(r["trade_id"]) for r in rows]
 
 
@@ -69,7 +70,7 @@ def _fetch_audit_report_id(trade_id: int) -> int | None:
     return int(row["id"]) if row else None
 
 
-def _fetch_severe_trade_media_jobs(report_date: date, limit: int = 100) -> list[dict[str, Any]]:
+def _fetch_severe_trade_media_jobs(report_date: date | None = None, limit: int = 100) -> list[dict[str, Any]]:
     engine = get_engine()
     sql = text(
         """
@@ -85,15 +86,16 @@ def _fetch_severe_trade_media_jobs(report_date: date, limit: int = 100) -> list[
           ar.citation_image_prompts
         FROM trades t
         JOIN anomaly_scores a ON a.trade_id = t.id
-        LEFT JOIN audit_reports ar ON ar.trade_id = t.id
-        WHERE t.trade_date = :report_date
-          AND a.severity_quadrant = 'SEVERE'
+        JOIN audit_reports ar ON ar.trade_id = t.id
+        WHERE a.severity_quadrant = 'SEVERE'
+          AND ar.video_prompt IS NOT NULL
+          AND ar.narration_script IS NOT NULL
         ORDER BY GREATEST(a.cohort_index, a.baseline_index) DESC
         LIMIT :limit
         """
     )
     with engine.connect() as conn:
-        rows = conn.execute(sql, {"report_date": report_date, "limit": limit}).mappings().all()
+        rows = conn.execute(sql, {"limit": limit}).mappings().all()
     return [dict(r) for r in rows]
 
 
@@ -183,12 +185,20 @@ def _generate_citation_images_for_severe(
                     prompt=str(prompt),
                     output_path=str(img_path),
                 )
+                actual_path = meta.get("path", str(img_path))
+
+                storage_url = actual_path
+                if gcs_enabled():
+                    ext = Path(actual_path).suffix or ".png"
+                    blob = f"media/trades/{trade_id}/citation_{idx}{ext}"
+                    storage_url = upload_file_to_gcs(actual_path, blob)
+
                 try:
                     write_media_asset(
                         trade_id=trade_id,
                         audit_report_id=audit_report_id,
                         asset_type="citation_image",
-                        storage_url=str(img_path),
+                        storage_url=storage_url,
                         file_size_bytes=meta.get("file_size_bytes"),
                         generation_status="ready",
                         model_used=str(meta.get("provider") or "image-gen"),
@@ -235,7 +245,7 @@ def _generate_trade_media_for_severe(
         )
         video_prompt = (
             job.get("video_prompt")
-            or f"Investigative newsroom, civic accountability visuals, focus on {job.get('ticker') or 'stock'} trade, 9:16"
+            or f"Investigative newsroom, civic accountability visuals, focus on {job.get('ticker') or 'stock'} trade, 16:9 landscape"
         )
 
         audio_path = staging_dir / f"trade_{trade_id}_audio.wav"
@@ -249,11 +259,14 @@ def _generate_trade_media_for_severe(
                 output_path=str(audio_path),
             )
 
+            citation_image_paths = _fetch_citation_image_paths(trade_id) or []
+
             video_meta = generate_video_from_prompt(
                 prompt=video_prompt,
                 output_path=str(video_path),
                 duration_seconds=float(audio_meta.get("duration_seconds") or 30.0),
-                reference_image_paths=_fetch_citation_image_paths(trade_id) or None,
+                aspect_ratio="16:9",
+                reference_image_paths=citation_image_paths or None,
             )
 
             audio_storage_url = str(audio_path)
@@ -272,14 +285,31 @@ def _generate_trade_media_for_severe(
                 model_used=str(audio_meta.get("provider") or "tts"),
             )
 
+            # Mux audio + video
+            muxed_path = staging_dir / f"trade_{trade_id}_muxed.mp4"
             assembly = assemble_and_register_trade_video(
                 trade_id=trade_id,
                 video_path=str(video_path),
                 audio_path=str(audio_path),
-                output_path=str(output_path),
+                output_path=str(muxed_path),
                 audit_report_id=audit_report_id,
                 model_used=f"{video_meta.get('provider', 'video')}+ffmpeg-mux",
             )
+
+            # Overlay citation images onto muxed video
+            if citation_image_paths:
+                try:
+                    overlay_result = overlay_citation_images(
+                        video_path=str(muxed_path),
+                        citation_image_paths=citation_image_paths,
+                        output_path=str(output_path),
+                    )
+                except Exception:
+                    import shutil as _shutil
+                    _shutil.copy2(str(muxed_path), str(output_path))
+            else:
+                import shutil as _shutil
+                _shutil.copy2(str(muxed_path), str(output_path))
 
             if gcs_enabled():
                 video_blob = f"media/trades/{trade_id}/video_{report_date.isoformat()}.mp4"
@@ -391,7 +421,7 @@ def _generate_daily_report_media(
         f"This is House Advantage for {report_date.isoformat()}."
     )
     veo_prompt = daily.get("veo_prompt") or (
-        "Investigative newsroom, data overlays, neutral civic reporting tone, 9:16"
+        "Investigative newsroom, data overlays, neutral civic reporting tone, 16:9 landscape"
     )
 
     audio_path = staging_dir / f"daily_{report_date.isoformat()}_audio.wav"
@@ -407,6 +437,7 @@ def _generate_daily_report_media(
             prompt=veo_prompt,
             output_path=str(video_path),
             duration_seconds=float(audio_meta.get("duration_seconds") or 30.0),
+            aspect_ratio="16:9",
         )
 
         assembly = assemble_video_with_audio(

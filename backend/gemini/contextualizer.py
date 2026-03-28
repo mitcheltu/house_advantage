@@ -164,8 +164,8 @@ Output schema:
     "score_driver": "cohort|baseline|both"
   }},
   "disclaimer": "string",
-  "video_prompt": "string or null",
-  "narration_script": "string or null",
+  "video_prompt": "REQUIRED string for SEVERE trades: cinematic visual direction for a ~10s investigative news segment (9:16 vertical). null only for non-SEVERE trades.",
+  "narration_script": "REQUIRED string for SEVERE trades: 1-2 sentence TTS narration (~15-25 words) summarising the flagged trade for a news-style video. null only for non-SEVERE trades.",
   "citation_image_prompts": ["one detailed image-generation prompt per relevant bill following the citation card design spec in system instructions, or empty list if no bills"]
 }}
 """.strip()
@@ -283,6 +283,20 @@ def _upsert_audit_report(trade_id: int, trade: dict[str, Any], result: Contextua
     payload = result.payload
     quadrant = (trade.get("severity_quadrant") or "UNREMARKABLE").upper()
     risk = _risk_level_for_quadrant(quadrant)
+
+    # Ensure SEVERE trades always have video_prompt and narration_script
+    if quadrant == "SEVERE":
+        if not payload.get("video_prompt"):
+            payload["video_prompt"] = (
+                "Dark newsroom desk, scattered legal documents and stock charts, "
+                "subtle motion graphics highlighting anomaly data, investigative tone, 9:16"
+            )
+        if not payload.get("narration_script"):
+            payload["narration_script"] = (
+                f"House Advantage flagged a {trade.get('ticker')} trade by "
+                f"{trade.get('full_name', 'a member of Congress')} in the SEVERE quadrant "
+                f"based on dual-model anomaly signals."
+            )
 
     sql = text(
         """
