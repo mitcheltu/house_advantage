@@ -98,53 +98,71 @@ export default function DailyClient({ dailyReport, severeVideos }) {
             ))}
           </div>
         ) : null}
-      </div>
 
-      <div className="severe-panel">
-        <div className="panel-header">
-          <h3>Severe Case Focus</h3>
-          <p>Click a clip to make it the main player.</p>
-        </div>
-        <div className="video-grid">
-          {severeVideos.length ? (
-            severeVideos.map((item) => {
-              const isActive = mainVideo.tradeId && mainVideo.tradeId === item.trade_id;
-              return (
-                <button
-                  key={item.trade_id}
-                  type="button"
-                  className={`video-tile ${isActive ? 'active' : ''}`}
-                  onClick={() =>
-                    setMainVideo({
-                      type: 'severe',
-                      title: item.audit_headline || 'Severe Case',
-                      subtitle: `${item.full_name || 'Unknown'} · ${item.ticker || '—'}`,
-                      videoUrl: item.video_url,
-                      tradeId: item.trade_id,
-                    })
-                  }
-                >
-                  {item.video_url ? (
-                    <video className="tile-video" muted playsInline preload="metadata" src={item.video_url} />
-                  ) : (
-                    <div className="video-placeholder">Video pending</div>
-                  )}
-                  <div className="tile-meta">
-                    <div className="tile-title">{item.audit_headline || 'Severe Case'}</div>
-                    <div className="tile-subtitle">
-                      {item.full_name || 'Unknown'} · {item.ticker || '—'} · {formatDate(item.trade_date)}
+        <div className="severe-panel">
+          <div className="panel-header">
+            <div>
+              <h3>Severe Case Focus</h3>
+              <p>Click a clip to make it the main player.</p>
+            </div>
+            {dailyReport?.video_url && mainVideo.type === 'severe' ? (
+              <button
+                type="button"
+                className="ghost-button"
+                onClick={() =>
+                  setMainVideo({
+                    type: 'daily',
+                    title: 'Daily Summary',
+                    subtitle: formatDate(dailyReport.report_date),
+                    videoUrl: dailyReport.video_url,
+                  })
+                }
+              >
+                Back to Daily
+              </button>
+            ) : null}
+          </div>
+          <div className="video-grid">
+            {severeVideos.length ? (
+              severeVideos.map((item) => {
+                const isActive = mainVideo.tradeId && mainVideo.tradeId === item.trade_id;
+                return (
+                  <button
+                    key={item.trade_id}
+                    type="button"
+                    className={`video-tile ${isActive ? 'active' : ''}`}
+                    onClick={() =>
+                      setMainVideo({
+                        type: 'severe',
+                        title: item.audit_headline || 'Severe Case',
+                        subtitle: `${item.full_name || 'Unknown'} · ${item.ticker || '—'}`,
+                        videoUrl: item.video_url,
+                        tradeId: item.trade_id,
+                      })
+                    }
+                  >
+                    {item.video_url ? (
+                      <video className="tile-video" muted playsInline preload="metadata" src={item.video_url} />
+                    ) : (
+                      <div className="video-placeholder">Video pending</div>
+                    )}
+                    <div className="tile-meta">
+                      <div className="tile-title">{item.audit_headline || 'Severe Case'}</div>
+                      <div className="tile-subtitle">
+                        {item.full_name || 'Unknown'} · {item.ticker || '—'} · {formatDate(item.trade_date)}
+                      </div>
+                      <div className="tile-subtitle">
+                        Severity: {item.severity_quadrant || 'SEVERE'}
+                        {item.video_duration ? ` · ${formatDuration(item.video_duration)}` : ''}
+                      </div>
                     </div>
-                    <div className="tile-subtitle">
-                      Severity: {item.severity_quadrant || 'SEVERE'}
-                      {item.video_duration ? ` · ${formatDuration(item.video_duration)}` : ''}
-                    </div>
-                  </div>
-                </button>
-              );
-            })
-          ) : (
-            <div className="empty-state">No severe cases yet.</div>
-          )}
+                  </button>
+                );
+              })
+            ) : (
+              <div className="empty-state">No severe cases yet.</div>
+            )}
+          </div>
         </div>
       </div>
     </section>

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import mimetypes
 import os
 from dataclasses import dataclass
@@ -10,6 +11,9 @@ from pathlib import Path
 from typing import Optional
 
 from google.cloud import storage
+
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -59,7 +63,10 @@ def upload_file_to_gcs(local_path: str, blob_path: str, content_type: str | None
     blob.upload_from_filename(local_path, content_type=ctype)
 
     if cfg.public:
-        blob.make_public()
+        try:
+            blob.make_public()
+        except Exception as exc:  # pragma: no cover - depends on bucket ACL mode
+            logger.warning("Failed to set object public; relying on bucket IAM: %s", exc)
 
     return f"gs://{cfg.bucket}/{blob_path}"
 

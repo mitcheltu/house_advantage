@@ -332,7 +332,21 @@ def _synthesize_with_gemini_tts(script_text: str, output: Path) -> tuple[dict[st
                     if audio_b64:
                         break
             if not audio_b64:
-                last_error = f"Gemini TTS response did not contain audio data keys={list(data.keys())}"
+                if os.getenv("TTS_DEBUG_VERBOSE_PAYLOAD", "false").strip().lower() in {"1", "true", "yes", "on"}:
+                    raw = json.dumps(data, ensure_ascii=False)
+                    if len(raw) > 1200:
+                        raw = raw[:1200] + "...<truncated>"
+                    print(f"[tts-debug] Gemini TTS payload: {raw}")
+                candidates = data.get("candidates") if isinstance(data.get("candidates"), list) else []
+                parts_count = sum(
+                    len(c.get("content", {}).get("parts", []))
+                    for c in candidates
+                    if isinstance(c, dict)
+                )
+                last_error = (
+                    "Gemini TTS response did not contain audio data "
+                    f"keys={list(data.keys())} candidates={len(candidates)} parts={parts_count}"
+                )
                 continue
 
             audio_bytes = base64.b64decode(str(audio_b64))
