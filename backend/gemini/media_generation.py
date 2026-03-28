@@ -1,0 +1,672 @@
+"""Automated media generation utilities for TTS + video synthesis.
+
+Features:
+- Speech synthesis using Google Cloud Text-to-Speech when configured.
+- Veo-compatible HTTP video generation via configurable endpoints.
+- Optional Google GenAI Veo contract mode (operation-based polling).
+- Automatic placeholder fallback media so pipelines can run end-to-end locally.
+"""
+
+from __future__ import annotations
+
+import base64
+import json
+import os
+import shutil
+import time
+import wave
+from pathlib import Path
+from typing import Any
+from urllib.parse import parse_qs, urlparse
+
+import ffmpeg
+import requests
+
+try:
+    from google.cloud import texttospeech  # type: ignore
+except Exception:  # pragma: no cover
+    texttospeech = None
+
+
+def _veo_debug_enabled() -> bool:
+    return os.getenv("VEO_DEBUG", "false").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _veo_debug(event: str, payload: dict[str, Any] | None = None) -> None:
+    if not _veo_debug_enabled():
+        return
+    if payload is None:
+        print(f"[veo-debug] {event}")
+        return
+
+    if os.getenv("VEO_DEBUG_VERBOSE_PAYLOAD", "false").strip().lower() in {"1", "true", "yes", "on"}:
+        raw = json.dumps(payload, ensure_ascii=False)
+        if len(raw) > 1200:
+            raw = raw[:1200] + "...<truncated>"
+        print(f"[veo-debug] {event}: {raw}")
+        return
+
+    top_level = list(payload.keys()) if isinstance(payload, dict) else []
+    print(f"[veo-debug] {event}: keys={top_level}")
+
+
+def _json_response(resp: requests.Response) -> dict[str, Any]:
+    ctype = resp.headers.get("content-type", "").lower()
+    return resp.json() if "application/json" in ctype else {}
+
+
+def _read_nested(payload: dict[str, Any], path: str) -> Any:
+    current: Any = payload
+    for token in path.split("."):
+        if isinstance(current, list):
+            try:
+                idx = int(token)
+            except ValueError:
+                return None
+            if idx < 0 or idx >= len(current):
+                return None
+            current = current[idx]
+            continue
+
+        if not isinstance(current, dict):
+            return None
+        current = current.get(token)
+        if current is None:
+            return None
+    return current
+
+
+def _extract_first(payload: dict[str, Any], paths: list[str]) -> Any:
+    for p in paths:
+        value = _read_nested(payload, p)
+        if value is not None and value != "":
+            return value
+    return None
+
+
+def _env_csv(name: str, default: str) -> list[str]:
+    raw = os.getenv(name, default)
+    return [part.strip() for part in raw.split(",") if part.strip()]
+
+
+def _build_auth(api_key: str) -> tuple[dict[str, str], dict[str, str]]:
+    mode = os.getenv("VEO_AUTH_MODE", "bearer").strip().lower()
+    header_name = os.getenv("VEO_AUTH_HEADER", "Authorization").strip() or "Authorization"
+    query_name = os.getenv("VEO_AUTH_QUERY_PARAM", "key").strip() or "key"
+
+    headers: dict[str, str] = {"Content-Type": "application/json"}
+    params: dict[str, str] = {}
+
+    if not api_key:
+        return headers, params
+
+    if mode == "query":
+        params[query_name] = api_key
+        return headers, params
+
+    if mode == "header":
+        headers[header_name] = api_key
+        return headers, params
+
+    if mode == "x-api-key":
+        headers["x-api-key"] = api_key
+        return headers, params
+
+    # default bearer
+    headers[header_name] = f"Bearer {api_key}"
+    return headers, params
+
+
+def _google_download_params(url: str, api_key: str) -> dict[str, str] | None:
+    if not api_key:
+        return None
+
+    parsed = urlparse(url)
+    if parsed.netloc != "generativelanguage.googleapis.com":
+        return None
+
+    qs = parse_qs(parsed.query)
+    if "key" in qs:
+        return None
+
+    return {"key": api_key}
+
+
+def _get_google_supported_methods(base: str, model: str, api_key: str) -> list[str]:
+    if not api_key:
+        return []
+
+    model_url = f"{base}/models/{model}"
+    try:
+        resp = requests.get(model_url, params={"key": api_key}, timeout=60)
+        resp.raise_for_status()
+        payload = _json_response(resp)
+        methods = payload.get("supportedGenerationMethods") or []
+        if isinstance(methods, list):
+            return [str(m) for m in methods if m]
+    except Exception:
+        return []
+
+    return []
+
+
+def _estimate_duration_seconds(script_text: str) -> float:
+    words = max(1, len((script_text or "").split()))
+    # ~2.4 words/s spoken rate with bounds for short/long scripts
+    return float(max(8, min(120, round(words / 2.4))))
+
+
+def _probe_duration(path: Path) -> float | None:
+    try:
+        info = ffmpeg.probe(str(path))
+        fmt = info.get("format", {})
+        return float(fmt.get("duration")) if fmt.get("duration") else None
+    except Exception:
+        return None
+
+
+def _probe_resolution(path: Path) -> str | None:
+    try:
+        info = ffmpeg.probe(str(path))
+        for stream in info.get("streams", []):
+            if stream.get("codec_type") == "video":
+                width = stream.get("width")
+                height = stream.get("height")
+                if width and height:
+                    return f"{width}x{height}"
+    except Exception:
+        return None
+    return None
+
+
+def _generate_silent_wav(output_path: Path, duration_seconds: float) -> dict[str, Any]:
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    sample_rate = 24000
+    channels = 1
+    sample_width = 2
+    frame_count = int(sample_rate * duration_seconds)
+    silence_frame = (0).to_bytes(2, byteorder="little", signed=True)
+
+    with wave.open(str(output_path), "wb") as wf:
+        wf.setnchannels(channels)
+        wf.setsampwidth(sample_width)
+        wf.setframerate(sample_rate)
+        wf.writeframes(silence_frame * frame_count)
+
+    return {
+        "path": str(output_path),
+        "duration_seconds": _probe_duration(output_path),
+        "file_size_bytes": output_path.stat().st_size if output_path.exists() else None,
+        "provider": "silent-fallback",
+    }
+
+
+def _create_tts_client() -> tuple[Any | None, str | None]:
+    if texttospeech is None:
+        return None, "google-cloud-texttospeech package unavailable"
+
+    tts_cred_path = os.getenv("TTS_CREDENTIALS_PATH", "").strip() or os.getenv("GOOGLE_APPLICATION_CREDENTIALS", "").strip()
+    allow_adc_fallback = os.getenv("TTS_ALLOW_ADC_FALLBACK", "true").strip().lower() in {"1", "true", "yes", "on"}
+
+    # If an explicit credentials path is configured but missing, optionally try ADC fallback.
+    if tts_cred_path and not Path(tts_cred_path).exists():
+        missing_msg = f"credentials file not found: {tts_cred_path}"
+        if not allow_adc_fallback:
+            return None, missing_msg
+
+        original = os.getenv("GOOGLE_APPLICATION_CREDENTIALS")
+        try:
+            os.environ.pop("GOOGLE_APPLICATION_CREDENTIALS", None)
+            client = texttospeech.TextToSpeechClient()
+            return client, f"{missing_msg}; using ADC fallback"
+        except Exception as exc:
+            return None, f"{missing_msg}; ADC fallback failed: {exc}"
+        finally:
+            if original is not None:
+                os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = original
+
+    original = os.getenv("GOOGLE_APPLICATION_CREDENTIALS")
+    try:
+        if tts_cred_path:
+            os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = tts_cred_path
+        client = texttospeech.TextToSpeechClient()
+        return client, None
+    except Exception as exc:
+        return None, str(exc)
+    finally:
+        # restore previous process env to avoid side effects
+        if original is None:
+            os.environ.pop("GOOGLE_APPLICATION_CREDENTIALS", None)
+        else:
+            os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = original
+
+
+def synthesize_narration_audio(script_text: str, output_path: str) -> dict[str, Any]:
+    output = Path(output_path)
+    output.parent.mkdir(parents=True, exist_ok=True)
+
+    language_code = os.getenv("TTS_LANGUAGE_CODE", "en-US")
+    voice_name = os.getenv("TTS_VOICE_NAME", "en-US-Neural2-F")
+    speaking_rate = float(os.getenv("TTS_SPEAKING_RATE", "1.0"))
+
+    tts_client_error: str | None = None
+    client, tts_client_error = _create_tts_client()
+    if client is not None and texttospeech is not None:
+        try:
+            synthesis_input = texttospeech.SynthesisInput(text=script_text)
+            voice = texttospeech.VoiceSelectionParams(
+                language_code=language_code,
+                name=voice_name,
+            )
+            audio_config = texttospeech.AudioConfig(
+                audio_encoding=texttospeech.AudioEncoding.LINEAR16,
+                speaking_rate=speaking_rate,
+            )
+            response = client.synthesize_speech(
+                request={
+                    "input": synthesis_input,
+                    "voice": voice,
+                    "audio_config": audio_config,
+                }
+            )
+            output.write_bytes(response.audio_content)
+            return {
+                "path": str(output),
+                "duration_seconds": _probe_duration(output),
+                "file_size_bytes": output.stat().st_size if output.exists() else None,
+                "provider": "google-cloud-texttospeech",
+            }
+        except Exception as exc:
+            tts_client_error = str(exc)
+
+    fallback = _generate_silent_wav(output, _estimate_duration_seconds(script_text))
+    if tts_client_error:
+        fallback["error"] = tts_client_error
+    return fallback
+
+
+def _download_to_file(
+    url: str,
+    output_path: Path,
+    headers: dict[str, str] | None = None,
+    params: dict[str, str] | None = None,
+) -> None:
+    with requests.get(url, headers=headers, params=params, timeout=300, stream=True) as resp:
+        resp.raise_for_status()
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        with output_path.open("wb") as f:
+            for chunk in resp.iter_content(chunk_size=8192):
+                if chunk:
+                    f.write(chunk)
+
+
+def _generate_placeholder_video(output_path: Path, duration_seconds: float, resolution: str = "1080x1920") -> dict[str, Any]:
+    ffmpeg_bin = (
+        os.getenv("FFMPEG_BIN", "").strip()
+        or shutil.which("ffmpeg")
+        or ("/opt/homebrew/bin/ffmpeg" if Path("/opt/homebrew/bin/ffmpeg").exists() else "")
+        or ("/usr/local/bin/ffmpeg" if Path("/usr/local/bin/ffmpeg").exists() else "")
+    )
+
+    if not ffmpeg_bin:
+        raise RuntimeError(
+            "No Veo endpoint configured and ffmpeg is not installed for local placeholder video generation."
+        )
+
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    (
+        ffmpeg
+        .input(f"color=c=0x0f1826:s={resolution}:r=24", f="lavfi", t=duration_seconds)
+        .output(
+            str(output_path),
+            vcodec="libx264",
+            pix_fmt="yuv420p",
+            movflags="+faststart",
+            r=24,
+        )
+        .overwrite_output()
+        .run(capture_stdout=True, capture_stderr=True, cmd=ffmpeg_bin)
+    )
+    return {
+        "path": str(output_path),
+        "duration_seconds": _probe_duration(output_path),
+        "file_size_bytes": output_path.stat().st_size if output_path.exists() else None,
+        "resolution": _probe_resolution(output_path),
+        "provider": "placeholder-video",
+    }
+
+
+def _poll_operation_video_url(
+    operation_id: str,
+    headers: dict[str, str],
+    timeout_seconds: int,
+    params: dict[str, str] | None = None,
+) -> str | None:
+    status_endpoint = os.getenv("VEO_STATUS_ENDPOINT", "").strip()
+    if not status_endpoint:
+        return None
+
+    poll_every = int(os.getenv("VEO_POLL_INTERVAL_SECONDS", "5"))
+    start = time.time()
+
+    while time.time() - start < timeout_seconds:
+        request_params = {"operation_id": operation_id}
+        if params:
+            request_params.update(params)
+
+        resp = requests.get(status_endpoint, headers=headers, params=request_params, timeout=60)
+        resp.raise_for_status()
+        payload = _json_response(resp)
+
+        status = str(payload.get("status", "")).lower()
+        if status in {"succeeded", "done", "completed"}:
+            return payload.get("video_url") or payload.get("result", {}).get("video_url")
+        if status in {"failed", "error", "cancelled"}:
+            return None
+
+        time.sleep(max(1, poll_every))
+
+    return None
+
+
+def _poll_google_operation_video_url(
+    operation_name_or_id: str,
+    api_key: str,
+    timeout_seconds: int,
+) -> str | None:
+    base = os.getenv("VEO_GOOGLE_BASE_URL", "https://generativelanguage.googleapis.com/v1beta").rstrip("/")
+    op_name = operation_name_or_id.strip()
+    if op_name.startswith("http://") or op_name.startswith("https://"):
+        operation_url = op_name
+    elif op_name.startswith("operations/"):
+        operation_url = f"{base}/{op_name.lstrip('/')}"
+    elif op_name.startswith("models/") and "/operations/" in op_name:
+        operation_url = f"{base}/{op_name.lstrip('/')}"
+    else:
+        operation_url = f"{base}/operations/{op_name.lstrip('/')}"
+    poll_every = int(os.getenv("VEO_POLL_INTERVAL_SECONDS", "5"))
+    start = time.time()
+
+    result_video_paths = _env_csv(
+        "VEO_GOOGLE_RESULT_VIDEO_URL_PATHS",
+        "response.generateVideoResponse.generatedSamples.0.video.uri,response.generatedVideos.0.video.uri,response.videos.0.uri,response.video.uri,response.video_url",
+    )
+    direct_video_paths = _env_csv(
+        "VEO_GOOGLE_DIRECT_VIDEO_URL_PATHS",
+        "generateVideoResponse.generatedSamples.0.video.uri,generatedVideos.0.video.uri,videos.0.uri,video.uri,video_url",
+    )
+
+    while time.time() - start < timeout_seconds:
+        resp = requests.get(operation_url, params={"key": api_key}, timeout=90)
+        resp.raise_for_status()
+        payload = _json_response(resp)
+        _veo_debug("google-poll-response", payload)
+
+        # Some responses may include ready result without explicit done=true.
+        eager_url = _extract_first(payload, direct_video_paths) or _extract_first(payload, result_video_paths)
+        if eager_url:
+            return str(eager_url)
+
+        done = bool(payload.get("done", False))
+        if done:
+            url = _extract_first(payload, result_video_paths)
+            if url:
+                return str(url)
+            return None
+
+        err = payload.get("error")
+        if err:
+            _veo_debug("google-poll-error", payload)
+            return None
+
+        time.sleep(max(1, poll_every))
+
+    return None
+
+
+def _try_generic_endpoint(
+    endpoint: str,
+    api_key: str,
+    prompt: str,
+    output: Path,
+    duration_seconds: float,
+    aspect_ratio: str,
+    timeout_seconds: int,
+) -> dict[str, Any] | None:
+    headers, params = _build_auth(api_key)
+    payload = {
+        "prompt": prompt,
+        "duration_seconds": duration_seconds,
+        "aspect_ratio": aspect_ratio,
+        "model": os.getenv("VEO_MODEL", "veo-3.1"),
+    }
+
+    resp = requests.post(endpoint, json=payload, headers=headers, params=params, timeout=180)
+    resp.raise_for_status()
+
+    ctype = resp.headers.get("content-type", "").lower()
+    if "video/" in ctype:
+        output.write_bytes(resp.content)
+        return {
+            "path": str(output),
+            "duration_seconds": _probe_duration(output),
+            "file_size_bytes": output.stat().st_size if output.exists() else None,
+            "resolution": _probe_resolution(output),
+            "provider": "veo-http-binary",
+        }
+
+    json_payload = _json_response(resp)
+
+    base64_paths = _env_csv("VEO_RESPONSE_VIDEO_BASE64_PATHS", "video_base64,result.video_base64,data.video_base64")
+    b64_data = _extract_first(json_payload, base64_paths)
+    if b64_data:
+        output.write_bytes(base64.b64decode(str(b64_data)))
+        return {
+            "path": str(output),
+            "duration_seconds": _probe_duration(output),
+            "file_size_bytes": output.stat().st_size if output.exists() else None,
+            "resolution": _probe_resolution(output),
+            "provider": "veo-http-base64",
+        }
+
+    url_paths = _env_csv("VEO_RESPONSE_VIDEO_URL_PATHS", "video_url,result.video_url,data.video_url")
+    video_url = _extract_first(json_payload, url_paths)
+
+    if not video_url:
+        op_paths = _env_csv("VEO_RESPONSE_OPERATION_PATHS", "operation_id,operation.id,operation.name,name")
+        op_id = _extract_first(json_payload, op_paths)
+        if op_id:
+            video_url = _poll_operation_video_url(
+                operation_id=str(op_id),
+                headers=headers,
+                timeout_seconds=timeout_seconds,
+                params=params,
+            )
+
+    if video_url:
+        download_headers = {k: v for k, v in headers.items() if k.lower() != "content-type"}
+        _download_to_file(str(video_url), output, headers=download_headers or None, params=params or None)
+        return {
+            "path": str(output),
+            "duration_seconds": _probe_duration(output),
+            "file_size_bytes": output.stat().st_size if output.exists() else None,
+            "resolution": _probe_resolution(output),
+            "provider": "veo-http-url",
+        }
+
+    return None
+
+
+def _try_google_genai_veo(
+    api_key: str,
+    prompt: str,
+    output: Path,
+    duration_seconds: float,
+    aspect_ratio: str,
+    timeout_seconds: int,
+) -> dict[str, Any] | None:
+    if not api_key:
+        return None
+
+    base = os.getenv("VEO_GOOGLE_BASE_URL", "https://generativelanguage.googleapis.com/v1beta").rstrip("/")
+    model = os.getenv("VEO_MODEL", "veo-3.1-generate-preview")
+    clamped_duration = int(max(4, min(120, round(duration_seconds))))
+
+    method_mode = os.getenv("VEO_GOOGLE_METHOD", "auto").strip().lower()
+    supported = {m.lower() for m in _get_google_supported_methods(base, model, api_key)}
+    if supported:
+        _veo_debug("google-supported-methods", {"model": model, "methods": sorted(supported)})
+
+    if method_mode == "predictlongrunning":
+        method_candidates = ["predictLongRunning"]
+    elif method_mode == "generatevideos":
+        method_candidates = ["generateVideos"]
+    else:
+        if "predictlongrunning" in supported and "generatevideos" not in supported:
+            method_candidates = ["predictLongRunning"]
+        elif "generatevideos" in supported and "predictlongrunning" not in supported:
+            method_candidates = ["generateVideos"]
+        else:
+            method_candidates = ["generateVideos", "predictLongRunning"]
+
+    data: dict[str, Any] = {}
+    last_error: Exception | None = None
+
+    for method in method_candidates:
+        endpoint = f"{base}/models/{model}:{method}"
+        if method == "predictLongRunning":
+            min_seconds = int(os.getenv("VEO_GOOGLE_MIN_DURATION_SECONDS", "4"))
+            max_seconds = int(os.getenv("VEO_GOOGLE_MAX_DURATION_SECONDS", "8"))
+            method_duration = int(max(min_seconds, min(max_seconds, clamped_duration)))
+            payload = {
+                "instances": [{"prompt": prompt}],
+                "parameters": {
+                    "durationSeconds": method_duration,
+                    "aspectRatio": aspect_ratio,
+                },
+            }
+        else:
+            payload = {
+                "prompt": {"text": prompt},
+                "config": {
+                    "durationSeconds": clamped_duration,
+                    "aspectRatio": aspect_ratio,
+                },
+            }
+
+        try:
+            _veo_debug("google-request", {"endpoint": endpoint, "method": method, "aspect_ratio": aspect_ratio})
+            resp = requests.post(
+                endpoint,
+                params={"key": api_key},
+                headers={"Content-Type": "application/json"},
+                json=payload,
+                timeout=180,
+            )
+            resp.raise_for_status()
+            data = _json_response(resp)
+            _veo_debug("google-create-response", data)
+            break
+        except requests.HTTPError as exc:
+            last_error = exc
+            status = exc.response.status_code if exc.response is not None else None
+            error_payload = _json_response(exc.response) if exc.response is not None else {}
+            _veo_debug("google-create-error", {"status": status, "payload": error_payload})
+            # Try next method when endpoint is not found/supported
+            if status == 404:
+                continue
+            raise
+
+    if not data:
+        if last_error:
+            raise last_error
+        return None
+
+    # Some providers may return completed payload immediately.
+    direct_url = _extract_first(
+        data,
+        _env_csv(
+            "VEO_GOOGLE_DIRECT_VIDEO_URL_PATHS",
+            "generateVideoResponse.generatedSamples.0.video.uri,generatedVideos.0.video.uri,videos.0.uri,video.uri,video_url",
+        ),
+    )
+    if direct_url:
+        parsed = urlparse(str(direct_url))
+        if parsed.scheme in {"http", "https"}:
+            _download_to_file(str(direct_url), output, params=_google_download_params(str(direct_url), api_key))
+            return {
+                "path": str(output),
+                "duration_seconds": _probe_duration(output),
+                "file_size_bytes": output.stat().st_size if output.exists() else None,
+                "resolution": _probe_resolution(output),
+                "provider": "veo-google-direct-url",
+            }
+
+    op_name = _extract_first(data, _env_csv("VEO_GOOGLE_OPERATION_PATHS", "name,operation.name,operation.id,id"))
+    if not op_name:
+        return None
+
+    video_url = _poll_google_operation_video_url(
+        operation_name_or_id=str(op_name),
+        api_key=api_key,
+        timeout_seconds=timeout_seconds,
+    )
+    if not video_url:
+        _veo_debug("google-operation-no-video", {"operation": str(op_name)})
+        return None
+
+    parsed = urlparse(video_url)
+    if parsed.scheme not in {"http", "https"}:
+        return None
+
+    _download_to_file(video_url, output, params=_google_download_params(video_url, api_key))
+    return {
+        "path": str(output),
+        "duration_seconds": _probe_duration(output),
+        "file_size_bytes": output.stat().st_size if output.exists() else None,
+        "resolution": _probe_resolution(output),
+        "provider": "veo-google-operation-url",
+    }
+
+
+def generate_video_from_prompt(
+    prompt: str,
+    output_path: str,
+    duration_seconds: float,
+    aspect_ratio: str = "9:16",
+) -> dict[str, Any]:
+    output = Path(output_path)
+    output.parent.mkdir(parents=True, exist_ok=True)
+
+    endpoint = os.getenv("VEO_API_ENDPOINT", "").strip()
+    api_key = os.getenv("VEO_API_KEY", "").strip() or os.getenv("GEMINI_API_KEY", "").strip()
+    timeout_seconds = int(os.getenv("VEO_TIMEOUT_SECONDS", "600"))
+    provider = os.getenv("VEO_PROVIDER", "auto").strip().lower()
+
+    if provider in {"google", "google-genai", "genai", "auto"} and not endpoint:
+        result = _try_google_genai_veo(
+            api_key=api_key,
+            prompt=prompt,
+            output=output,
+            duration_seconds=duration_seconds,
+            aspect_ratio=aspect_ratio,
+            timeout_seconds=timeout_seconds,
+        )
+        if result:
+            return result
+
+    if endpoint:
+        result = _try_generic_endpoint(
+            endpoint=endpoint,
+            api_key=api_key,
+            prompt=prompt,
+            output=output,
+            duration_seconds=duration_seconds,
+            aspect_ratio=aspect_ratio,
+            timeout_seconds=timeout_seconds,
+        )
+        if result:
+            return result
+
+    # Always keep pipeline runnable even if Veo is not configured
+    return _generate_placeholder_video(output, duration_seconds=duration_seconds)

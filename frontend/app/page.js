@@ -1,4 +1,9 @@
-import { fetchLeaderboard, fetchSystemic } from '@/lib/api';
+import {
+  fetchLatestDailyReport,
+  fetchLeaderboard,
+  fetchSystemic,
+  fetchTradeAudit,
+} from '@/lib/api';
 
 function StatCard({ label, value, subtext }) {
   return (
@@ -13,10 +18,21 @@ function StatCard({ label, value, subtext }) {
 export default async function HomePage() {
   let systemic = null;
   let leaderboard = null;
+  let dailyReport = null;
+  let auditPreview = null;
   let error = null;
 
   try {
-    [systemic, leaderboard] = await Promise.all([fetchSystemic(), fetchLeaderboard()]);
+    [systemic, leaderboard, dailyReport] = await Promise.all([
+      fetchSystemic(),
+      fetchLeaderboard(),
+      fetchLatestDailyReport().catch(() => null),
+    ]);
+
+    const topTradeId = leaderboard?.items?.[0]?.trade_id;
+    if (topTradeId) {
+      auditPreview = await fetchTradeAudit(topTradeId).catch(() => null);
+    }
   } catch (err) {
     error = err instanceof Error ? err.message : 'Unknown error';
   }
@@ -52,6 +68,37 @@ export default async function HomePage() {
               value={systemic.audit_triggered.count}
               subtext={`${systemic.audit_triggered.pct}%`}
             />
+          </div>
+        </section>
+      ) : null}
+
+      {dailyReport ? (
+        <section>
+          <h2>Daily GenMedia Snapshot</h2>
+          <div className="stats-grid">
+            <StatCard label="Report Date" value={String(dailyReport.report_date).slice(0, 10)} />
+            <StatCard label="Generation Status" value={dailyReport.generation_status || 'unknown'} />
+            <StatCard label="Has Veo Prompt" value={dailyReport.veo_prompt ? 'Yes' : 'No'} />
+            <StatCard label="Has Narration" value={dailyReport.narration_script ? 'Yes' : 'No'} />
+          </div>
+          {dailyReport.video_url ? (
+            <p className="muted-line">Video URL: {dailyReport.video_url}</p>
+          ) : null}
+        </section>
+      ) : null}
+
+      {auditPreview?.audit_report ? (
+        <section>
+          <h2>Auditor Preview (Top Flagged Trade)</h2>
+          <div className="card">
+            <div className="card-label">{auditPreview.audit_report.headline}</div>
+            <div className="card-subtext">
+              Risk: {auditPreview.audit_report.risk_level} · Quadrant: {auditPreview.audit_report.severity_quadrant}
+            </div>
+            <p>{auditPreview.audit_report.narrative}</p>
+            <div className="card-subtext">
+              Media assets: {(auditPreview.media_assets || []).length}
+            </div>
           </div>
         </section>
       ) : null}

@@ -7,6 +7,8 @@ ffmpeg-based media assembly utilities.
 
 from __future__ import annotations
 
+import os
+import shutil
 from pathlib import Path
 from typing import Any
 
@@ -16,9 +18,34 @@ from sqlalchemy import text
 from backend.db.connection import get_engine
 
 
+def _resolve_ffmpeg_bin() -> str:
+    return (
+        os.getenv("FFMPEG_BIN", "").strip()
+        or shutil.which("ffmpeg")
+        or ("/opt/homebrew/bin/ffmpeg" if Path("/opt/homebrew/bin/ffmpeg").exists() else "")
+        or ("/usr/local/bin/ffmpeg" if Path("/usr/local/bin/ffmpeg").exists() else "")
+        or "ffmpeg"
+    )
+
+
+def _resolve_ffprobe_bin() -> str:
+    custom = os.getenv("FFPROBE_BIN", "").strip()
+    if custom:
+        return custom
+
+    ffmpeg_bin = _resolve_ffmpeg_bin()
+    ffmpeg_path = Path(ffmpeg_bin)
+    if ffmpeg_path.is_absolute():
+        sibling = ffmpeg_path.with_name("ffprobe")
+        if sibling.exists():
+            return str(sibling)
+
+    return shutil.which("ffprobe") or "ffprobe"
+
+
 def _probe_duration(path: Path) -> float | None:
     try:
-        info = ffmpeg.probe(str(path))
+        info = ffmpeg.probe(str(path), cmd=_resolve_ffprobe_bin())
         fmt = info.get("format", {})
         return float(fmt.get("duration")) if fmt.get("duration") else None
     except Exception:
@@ -31,6 +58,7 @@ def assemble_video_with_audio(
     output_path: str,
     overwrite: bool = True,
 ) -> dict[str, Any]:
+    ffmpeg_bin = _resolve_ffmpeg_bin()
     video = ffmpeg.input(video_path)
     audio = ffmpeg.input(audio_path)
 
@@ -47,7 +75,7 @@ def assemble_video_with_audio(
     if overwrite:
         out = out.overwrite_output()
 
-    out.run(capture_stdout=True, capture_stderr=True)
+    out.run(capture_stdout=True, capture_stderr=True, cmd=ffmpeg_bin)
 
     out_file = Path(output_path)
     return {

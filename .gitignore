@@ -1,5 +1,7 @@
 .env
 data/
+backend/data/media/
+backend/data/media_staging/
 model/*.pkl
 __pycache__/
 *.pyc

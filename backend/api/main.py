@@ -3,7 +3,7 @@ import os
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from backend.api.routers import audit, health, jobs, politicians, systemic
+from backend.api.routers import audit, health, jobs, politicians, reports, systemic
 
 
 app = FastAPI(
@@ -27,3 +27,4 @@ app.include_router(systemic.router)
 app.include_router(politicians.router)
 app.include_router(audit.router)
 app.include_router(jobs.router)
+app.include_router(reports.router)

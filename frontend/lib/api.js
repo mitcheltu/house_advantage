@@ -20,3 +20,11 @@ export async function fetchSystemic() {
 export async function fetchLeaderboard() {
   return getJson('/api/v1/leaderboard?limit=25');
 }
+
+export async function fetchTradeAudit(tradeId) {
+  return getJson(`/api/v1/audit/${tradeId}`);
+}
+
+export async function fetchLatestDailyReport() {
+  return getJson('/api/v1/daily-report/latest');
+}

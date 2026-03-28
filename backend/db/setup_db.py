@@ -97,15 +97,24 @@ def run_schema():
     engine = get_engine()
     schema_sql = SCHEMA_PATH.read_text(encoding="utf-8")
 
-    # Split on semicolons and execute each statement
-    statements = [s.strip() for s in schema_sql.split(";") if s.strip()]
+    # Remove full-line SQL comments so statements are not dropped when a
+    # comment block appears before CREATE TABLE.
+    cleaned_lines = []
+    for line in schema_sql.splitlines():
+        if line.lstrip().startswith("--"):
+            continue
+        cleaned_lines.append(line)
+
+    cleaned_sql = "\n".join(cleaned_lines)
+
+    # Split on semicolons and execute each statement.
+    statements = [s.strip() for s in cleaned_sql.split(";") if s.strip()]
     with engine.connect() as conn:
         for stmt in statements:
-            if stmt and not stmt.startswith("--"):
-                try:
-                    conn.execute(text(stmt))
-                except Exception as e:
-                    log.warning(f"Schema statement warning: {e}")
+            try:
+                conn.execute(text(stmt))
+            except Exception as e:
+                log.warning(f"Schema statement warning: {e}")
         conn.commit()
 
     log.info("Schema created successfully")

@@ -340,7 +340,7 @@ CREATE TABLE IF NOT EXISTS pac_contributions (
 -- ============================================================
 CREATE TABLE IF NOT EXISTS audit_reports (
     id                  BIGINT AUTO_INCREMENT PRIMARY KEY,
-    trade_id            BIGINT NOT NULL UNIQUE,
+    trade_id            INT NOT NULL UNIQUE,
     generated_at        TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     headline            VARCHAR(500),
     risk_level          ENUM('low','medium','high','very_high') NOT NULL,
@@ -367,7 +367,7 @@ CREATE TABLE IF NOT EXISTS audit_reports (
 -- ============================================================
 CREATE TABLE IF NOT EXISTS media_assets (
     id                  BIGINT AUTO_INCREMENT PRIMARY KEY,
-    trade_id            BIGINT NOT NULL,
+    trade_id            INT NOT NULL,
     audit_report_id     BIGINT,
     asset_type          ENUM('audio','video','thumbnail') NOT NULL,
     storage_url         VARCHAR(500) NOT NULL,

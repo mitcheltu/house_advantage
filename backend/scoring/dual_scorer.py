@@ -20,6 +20,7 @@ Usage:
     python backend/scoring/dual_scorer.py --all    # re-score everything
 """
 import json
+import os
 import sys
 from datetime import timedelta
 from pathlib import Path
@@ -28,12 +29,19 @@ import joblib
 import numpy as np
 import pandas as pd
 import pymysql
+from dotenv import load_dotenv
 
 ROOT = Path(__file__).resolve().parents[2]
+load_dotenv(ROOT / ".env")
 
 # ── DB connection ─────────────────────────────────────────────────────────────
-DB_CFG = dict(host="localhost", port=3307, user="root",
-              password="changeme", database="house_advantage")
+DB_CFG = dict(
+    host=os.getenv("MYSQL_HOST", "127.0.0.1"),
+    port=int(os.getenv("MYSQL_PORT", "3306")),
+    user=os.getenv("MYSQL_USER", "root"),
+    password=os.getenv("MYSQL_PASSWORD", ""),
+    database=os.getenv("MYSQL_DATABASE", "house_advantage"),
+)
 
 FEATURES = [
     "cohort_alpha", "pre_trade_alpha", "proximity_days", "bill_proximity",
