@@ -6,11 +6,14 @@ House Advantage automatically detects, investigates, and broadcasts statisticall
 
 > Built for the Google GenMedia Hackathon · March 2026
 
+**Live frontend:** https://house-advantage-frontend-115145734496.us-west1.run.app
+
 ---
 
 ## Table of Contents
 
 - [The Problem](#the-problem)
+- [Live Deployment](#live-deployment)
 - [How It Works](#how-it-works)
 - [Dual-Model Architecture](#dual-model-architecture)
 - [Tech Stack](#tech-stack)
@@ -37,6 +40,13 @@ House Advantage closes that gap with two distinct layers of insight:
 
 - **Individual accusation:** *"This specific trade is unusual even by congressional standards"*
 - **Systemic accusation:** *"Congressional trading as a whole is unusual compared to normal investors"*
+
+---
+
+## Live Deployment
+
+- Frontend: https://house-advantage-frontend-115145734496.us-west1.run.app
+- Backend API base: https://house-advantage-api-115145734496.us-west1.run.app
 
 ---
 
@@ -115,7 +125,7 @@ Every trade is placed into one of four quadrants based on its two anomaly scores
 - **MySQL 8.0** — Primary database (SQLAlchemy ORM)
 - **scikit-learn** — Anomaly detection models (Isolation Forest)
 - **Gemini 2.5 Pro** — Function-calling contextualizer, bill text analysis, script writing
-- **Google Cloud TTS** — Narration audio generation
+- **Gemini TTS / Google Cloud TTS** — Narration audio generation (provider-configurable)
 - **Veo 3.1** — Video generation with scene extensions
 - **ffmpeg** — Audio/video muxing and assembly
 
@@ -270,7 +280,7 @@ CONGRESS_GOV_API_KEY=your_congress_api_key
 OPENFEC_API_KEY=your_openfec_api_key
 
 # Frontend
-NEXT_PUBLIC_API_URL=http://localhost:8000
+NEXT_PUBLIC_API_BASE_URL=http://localhost:8000
 ```
 
 ---
@@ -315,13 +325,15 @@ Runs the 12-step data collection pipeline across all configured sources.
 | Method | Endpoint | Description |
 |---|---|---|
 | `GET` | `/health` | Health check |
-| `GET` | `/api/systemic` | Systemic metrics and aggregate stats |
-| `GET` | `/api/politicians` | Politician leaderboard with search |
-| `GET` | `/api/politicians/{id}` | Individual politician profile & trades |
-| `GET` | `/api/reports/daily` | Daily video report metadata |
-| `GET` | `/api/reports/daily/{date}` | Specific daily report |
-| `GET` | `/api/audit/{trade_id}` | Audit report for a specific trade |
-| `POST` | `/api/jobs/pipeline` | Trigger the daily pipeline |
+| `GET` | `/api/v1/systemic` | Systemic metrics and aggregate stats |
+| `GET` | `/api/v1/leaderboard` | Ranked scored trades (supports `quadrant`) |
+| `GET` | `/api/v1/politicians` | Politician index with search |
+| `GET` | `/api/v1/politician/{id}` | Individual politician profile & trades |
+| `GET` | `/api/v1/daily-report/latest` | Latest daily video report metadata |
+| `GET` | `/api/v1/daily-report/{date}` | Specific daily report |
+| `GET` | `/api/v1/audit/{trade_id}` | Audit report for a specific trade |
+| `GET` | `/api/v1/prices` | Historical ticker prices |
+| `POST` | `/api/v1/jobs/run-daily-evidence` | Trigger the daily evidence/media pipeline |
 
 ---
 
@@ -333,7 +345,7 @@ House Advantage chains three Google AI models in a non-trivial intelligence pipe
 |---|---|---|
 | 1 | **Gemini 2.5 Pro** (tool use) | Autonomously investigates SEVERE + SYSTEMIC trades by function-calling DB tools, reading bill text (50K–200K+ tokens), and cross-referencing evidence |
 | 2 | **Gemini 2.5 Pro** (structured output) | Reviews the day's flagged trades and writes narration scripts for TTS and visual prompts for Veo |
-| 3 | **Google Cloud TTS** | Converts narration scripts into natural-sounding audio |
+| 3 | **Gemini TTS** (default) / **Google Cloud TTS** (fallback) | Converts narration scripts into natural-sounding audio |
 | 4 | **Veo 3.1** | Generates ~30s news report videos using scene extensions (7s segments chained for continuity) |
 | 5 | **ffmpeg** | Muxes narration audio + generated video into final reports |
 
@@ -398,7 +410,6 @@ The Next.js frontend has two main sections:
 
 ### Daily Report (`/`)
 - AI-generated daily video report (main player)
-- Daily stats chips (date, pipeline status, media generation status)
 - Severe Case Focus grid — paginated tiles for each SEVERE-flagged trade
 - Sources & Context panel with Gemini contextualizer output, factor tags, bill references, and hyperlinked citations
 
