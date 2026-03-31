@@ -2,7 +2,7 @@
 
 **A Civic News Platform for Congressional Trade Accountability**
 
-House Advantage automatically detects, investigates, and broadcasts statistically anomalous congressional stock trades. It combines a dual machine learning model with a Gemini-powered contextualizer and Google's genMedia APIs (Veo 3.1, TTS) to produce daily video news reports — fully automated, zero human editing.
+House Advantage automatically detects, investigates, and broadcasts statistically anomalous congressional stock trades. It combines a dual machine learning model with a Gemini-powered contextualizer, Nano Banana citation-card image generation, and Google's genMedia APIs (Veo + TTS) to produce daily video news reports with source context overlays.
 
 > Built for the Google GenMedia Hackathon · March 2026
 
@@ -67,8 +67,11 @@ Gemini Contextualizer investigates SEVERE + SYSTEMIC trades
 Daily Video Scriptwriter (Gemini) reviews the day's flagged trades
   → Writes ~30s narration script + Veo video prompt
         ↓
-TTS generates narration audio → Veo 3.1 generates video
-  → ffmpeg muxes audio + video → Daily video report published
+Nano Banana generates citation-card images from bill/context prompts
+                                ↓
+TTS generates narration audio → Veo generates video
+        → ffmpeg muxes audio + video + overlays citation cards
+        → Final media uploaded to GCS and served via signed URLs
         ↓
 Users browse news feed, explore politician index, view trade timelines
 ```
@@ -125,6 +128,7 @@ Every trade is placed into one of four quadrants based on its two anomaly scores
 - **MySQL 8.0** — Primary database (SQLAlchemy ORM)
 - **scikit-learn** — Anomaly detection models (Isolation Forest)
 - **Gemini 2.5 Pro** — Function-calling contextualizer, bill text analysis, script writing
+- **Nano Banana 2** (`gemini-3.1-flash-image-preview`) — Citation card image generation
 - **Gemini TTS / Google Cloud TTS** — Narration audio generation (provider-configurable)
 - **Veo 3.1** — Video generation with scene extensions
 - **ffmpeg** — Audio/video muxing and assembly
@@ -136,6 +140,7 @@ Every trade is placed into one of four quadrants based on its two anomaly scores
 ### Infrastructure
 - **Docker / Docker Compose** — Local development (MySQL)
 - **Google Cloud Platform** — Production target (Cloud Run, Cloud SQL, GCS, Cloud Scheduler)
+- **Signed URL media delivery** — Private GCS assets resolved to short-lived browser-safe URLs
 
 ---
 
@@ -273,7 +278,18 @@ GOOGLE_CLOUD_PROJECT=your_gcp_project_id
 
 # Google Cloud (media pipeline)
 GOOGLE_APPLICATION_CREDENTIALS=path/to/service-account.json
-GCS_BUCKET_NAME=your_gcs_bucket
+GCS_BUCKET=your_gcs_bucket
+GCS_PUBLIC=false
+GCS_SIGNED_URL_TTL_SECONDS=3600
+
+# Media generation providers
+TTS_PROVIDER=gemini
+TTS_GEMINI_MODEL=gemini-2.5-pro-preview-tts
+TTS_GEMINI_VOICE=Kore
+IMAGE_GEN_PROVIDER=nano-banana
+IMAGE_GEN_MODEL=gemini-3.1-flash-image-preview
+VEO_PROVIDER=auto
+VEO_MODEL=veo-3.1-generate-preview
 
 # Data Sources
 CONGRESS_GOV_API_KEY=your_congress_api_key
@@ -325,6 +341,7 @@ Runs the 12-step data collection pipeline across all configured sources.
 | Method | Endpoint | Description |
 |---|---|---|
 | `GET` | `/health` | Health check |
+| `GET` | `/api/v1/health` | Versioned health check |
 | `GET` | `/api/v1/systemic` | Systemic metrics and aggregate stats |
 | `GET` | `/api/v1/leaderboard` | Ranked scored trades (supports `quadrant`) |
 | `GET` | `/api/v1/politicians` | Politician index with search |
@@ -339,17 +356,19 @@ Runs the 12-step data collection pipeline across all configured sources.
 
 ## GenMedia Pipeline
 
-House Advantage chains three Google AI models in a non-trivial intelligence pipeline:
+House Advantage chains multiple AI/media stages in a non-trivial intelligence pipeline:
 
 | Step | Google Model | Role |
 |---|---|---|
 | 1 | **Gemini 2.5 Pro** (tool use) | Autonomously investigates SEVERE + SYSTEMIC trades by function-calling DB tools, reading bill text (50K–200K+ tokens), and cross-referencing evidence |
 | 2 | **Gemini 2.5 Pro** (structured output) | Reviews the day's flagged trades and writes narration scripts for TTS and visual prompts for Veo |
-| 3 | **Gemini TTS** (default) / **Google Cloud TTS** (fallback) | Converts narration scripts into natural-sounding audio |
-| 4 | **Veo 3.1** | Generates ~30s news report videos using scene extensions (7s segments chained for continuity) |
-| 5 | **ffmpeg** | Muxes narration audio + generated video into final reports |
+| 3 | **Nano Banana 2** (`gemini-3.1-flash-image-preview`) | Generates dark-themed bill citation-card images used as visual references and overlays |
+| 4 | **Gemini TTS** (default) / **Google Cloud TTS** (fallback) | Converts narration scripts into audio |
+| 5 | **Veo** (`veo-3.1-generate-preview` default) | Generates trade and daily videos from prompts, with retries/fallback behavior |
+| 6 | **ffmpeg** | Muxes narration audio + generated video and overlays citation cards picture-in-picture |
+| 7 | **GCS + signed URL resolver** | Uploads media to Cloud Storage and resolves private objects into short-lived URLs for frontend playback |
 
-Gemini writes the instructions for both TTS and Veo after investigating the trades — each daily report is the product of an autonomous AI investigation, not a template.
+Gemini writes the instructions for image, TTS, and Veo generation after investigating the trades — each report is generated from live scored data, not static templates.
 
 ---
 
@@ -412,6 +431,7 @@ The Next.js frontend has two main sections:
 - AI-generated daily video report (main player)
 - Severe Case Focus grid — paginated tiles for each SEVERE-flagged trade
 - Sources & Context panel with Gemini contextualizer output, factor tags, bill references, and hyperlinked citations
+- Signed media playback for private GCS assets (resolved by backend)
 
 ### Politicians (`/politicians`)
 - Searchable politician index with debounced search
